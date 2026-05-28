@@ -21,6 +21,7 @@ DEEPSEEK_API_KEY = os.environ['DEEPSEEK_API_KEY']
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, 'articles.json')
 VISIT_LOG  = deque(maxlen=200)  # 最近 200 条访问记录
+GEO_CACHE  = {}  # IP → 地理位置缓存
 
 # 朝日新闻 RSS（RDF 格式，稳定可用，文章全文可直接抓取）
 ASAHI_RSS = 'https://www.asahi.com/rss/asahi/newsheadlines.rdf'
@@ -293,8 +294,24 @@ def api_articles():
 def visitors():
     log = list(VISIT_LOG)
     log.reverse()
+    # 批量为新 IP 查地理位置
+    new_ips = {v['ip'] for v in log if v['ip'] not in GEO_CACHE and not v['ip'].startswith('127.')}
+    for ip in new_ips:
+        try:
+            r = http.get(f'https://ipapi.co/{ip}/json/', timeout=5)
+            if r.status_code == 200:
+                d = r.json()
+                city = d.get('city', '')
+                region = d.get('region', '')
+                country = d.get('country_name', '')
+                GEO_CACHE[ip] = f'{city}, {region}, {country}' if city else country or '未知'
+            else:
+                GEO_CACHE[ip] = '—'
+        except Exception:
+            GEO_CACHE[ip] = '—'
     rows = ''.join(
         f'<tr><td>{v["time"]}</td><td style="color:#4f6ef7">{v["ip"]}</td>'
+        f'<td>{GEO_CACHE.get(v["ip"],"—")}</td>'
         f'<td>{v["ua"]}</td><td>{v["path"]}</td></tr>'
         for v in log
     )
@@ -313,7 +330,7 @@ a{{color:#4f6ef7;text-decoration:none}}
 <body>
 <h1>最近访问记录 ({len(log)} 条)</h1>
 <table>
-<tr><th>时间</th><th>IP</th><th>设备</th><th>路径</th></tr>
+<tr><th>时间</th><th>IP</th><th>位置</th><th>设备</th><th>路径</th></tr>
 {rows}
 </table>
 <p style="color:#94a3b8;font-size:12px;margin-top:12px">自动刷新中…</p>
