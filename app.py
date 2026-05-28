@@ -13,12 +13,14 @@ import os
 import hashlib
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
 
 # ─── 配置 ────────────────────────────────────────────────────────────────
 DEEPSEEK_API_KEY = os.environ['DEEPSEEK_API_KEY']
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, 'articles.json')
+VISIT_LOG  = deque(maxlen=200)  # 最近 200 条访问记录
 
 # 朝日新闻 RSS（RDF 格式，稳定可用，文章全文可直接抓取）
 ASAHI_RSS = 'https://www.asahi.com/rss/asahi/newsheadlines.rdf'
@@ -33,6 +35,36 @@ HTTP_HEADS = {
 }
 
 app = Flask(__name__)
+
+
+@app.before_request
+def _log_visit():
+    if request.path == '/visitors':
+        return
+    ip = request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or request.remote_addr
+    ua = request.headers.get('User-Agent', '?')
+    VISIT_LOG.append({
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'ip':   ip,
+        'ua':   _short_ua(ua),
+        'path': request.path,
+    })
+
+
+def _short_ua(ua):
+    if 'MicroMessenger' in ua:
+        return '微信'
+    if 'iPhone' in ua:
+        return 'iPhone Safari'
+    if 'Android' in ua:
+        return 'Android'
+    if 'Mac' in ua and 'Safari' in ua:
+        return 'Mac Safari'
+    if 'Windows' in ua:
+        return 'Windows'
+    if 'curl' in ua:
+        return 'curl'
+    return ua[:40]
 
 
 # ─── 缓存 ────────────────────────────────────────────────────────────────
@@ -255,6 +287,38 @@ def api_articles():
     if err:
         resp['warning'] = f'抓取失败，已使用缓存数据：{err}'
     return jsonify(resp)
+
+
+@app.route('/visitors')
+def visitors():
+    log = list(VISIT_LOG)
+    log.reverse()
+    rows = ''.join(
+        f'<tr><td>{v["time"]}</td><td style="color:#4f6ef7">{v["ip"]}</td>'
+        f'<td>{v["ua"]}</td><td>{v["path"]}</td></tr>'
+        for v in log
+    )
+    return f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>访问记录</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;background:#f1f5f9}}
+h1{{font-size:20px;margin-bottom:16px}}
+table{{width:100%;border-collapse:collapse;background:white;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
+th,td{{padding:10px 14px;text-align:left;font-size:14px;border-bottom:1px solid #e2e8f0}}
+th{{background:#f8fafc;font-weight:600;color:#64748b;font-size:12px;text-transform:uppercase}}
+tr:hover{{background:#f8fafc}}
+a{{color:#4f6ef7;text-decoration:none}}
+</style></head>
+<body>
+<h1>最近访问记录 ({len(log)} 条)</h1>
+<table>
+<tr><th>时间</th><th>IP</th><th>设备</th><th>路径</th></tr>
+{rows}
+</table>
+<p style="color:#94a3b8;font-size:12px;margin-top:12px">自动刷新中…</p>
+<script>setTimeout(()=>location.reload(),10000)</script>
+</body></html>'''
 
 
 @app.route('/analyze', methods=['POST'])
