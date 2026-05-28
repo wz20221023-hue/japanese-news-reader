@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日语文章分析器</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --primary:        #4f6ef7;
+      --primary-dark:   #3a56d4;
+      --primary-light:  #eef1fd;
+      --vocab-bg:       #fff3a0;
+      --vocab-border:   #f59e0b;
+      --vocab-hover:    #fde68a;
+      --grammar-bg:     #a0d4ff;
+      --grammar-border: #3b82f6;
+      --grammar-hover:  #7cc0ff;
+      --text:           #1e293b;
+      --text-muted:     #64748b;
+      --border:         #e2e8f0;
+      --bg:             #f1f5f9;
+      --white:          #ffffff;
+      --red-bg:         #fef2f2;
+      --red-border:     #fca5a5;
+      --red-text:       #dc2626;
+      --radius:         10px;
+      --shadow-sm:      0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.05);
+      --shadow:         0 4px 12px rgba(0,0,0,.08);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+                   'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* ───── Header ───── */
+    .header {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      position: sticky;
+      top: 0;
+      z-index: 200;
+      box-shadow: var(--shadow-sm);
+    }
+    .header-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      height: 58px;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--primary);
+      white-space: nowrap;
+      text-decoration: none;
+    }
+    .logo-icon { font-size: 24px; }
+    .btn-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 12px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 13px;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: all .18s;
+    }
+    .btn-back:hover { background: var(--bg); color: var(--text); border-color: #94a3b8; }
+    .header-sep {
+      width: 1px; height: 20px;
+      background: var(--border);
+    }
+    .header-title {
+      font-size: 14px;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 500px;
+      font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+    }
+
+    /* ───── Main ───── */
+    .main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* Article meta banner */
+    .article-meta {
+      background: var(--white);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      padding: 16px 20px;
+      margin-bottom: 16px;
+      border-left: 4px solid var(--primary);
+    }
+    .article-meta-title {
+      font-size: 18px;
+      font-weight: 700;
+      font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+      color: var(--text);
+      line-height: 1.5;
+      margin-bottom: 4px;
+    }
+    .article-meta-time {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    /* ───── Cards ───── */
+    .card {
+      background: var(--white);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+    .card-head {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .4px;
+    }
+    .card-body { padding: 16px 20px; }
+
+    .jp-textarea {
+      width: 100%;
+      min-height: 130px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 17px;
+      line-height: 1.9;
+      font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+      color: var(--text);
+      resize: vertical;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .jp-textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(79,110,247,.12);
+    }
+    .jp-textarea::placeholder { color: #94a3b8; }
+
+    .input-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 12px;
+    }
+    .hint { font-size: 12px; color: var(--text-muted); }
+
+    .btn-analyze {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 26px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s, transform .15s, box-shadow .2s;
+    }
+    .btn-analyze:hover:not(:disabled) {
+      background: var(--primary-dark);
+      box-shadow: 0 4px 12px rgba(79,110,247,.35);
+      transform: translateY(-1px);
+    }
+    .btn-analyze:active:not(:disabled) { transform: translateY(0); }
+    .btn-analyze:disabled { opacity: .45; cursor: not-allowed; }
+
+    .spin {
+      width: 15px; height: 15px;
+      border: 2px solid rgba(255,255,255,.35);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin .65s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-box {
+      display: none;
+      margin-top: 12px;
+      padding: 10px 14px;
+      background: var(--red-bg);
+      border: 1px solid var(--red-border);
+      border-radius: 8px;
+      color: var(--red-text);
+      font-size: 13px;
+    }
+    .error-box.show { display: block; }
+
+    /* ───── Result section ───── */
+    .result-wrap {
+      display: none;
+      margin-top: 20px;
+      animation: fadeUp .3s ease;
+    }
+    .result-wrap.show { display: block; }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .annotated-card { margin-bottom: 20px; }
+    .legend {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .legend-pip {
+      width: 13px; height: 13px;
+      border-radius: 3px;
+      border-bottom: 2px solid;
+      display: inline-block;
+    }
+    .legend-pip.v { background: var(--vocab-bg); border-color: var(--vocab-border); }
+    .legend-pip.g { background: var(--grammar-bg); border-color: var(--grammar-border); }
+    .legend-tip {
+      margin-left: auto;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+
+    .annotated-text {
+      font-size: 19px;
+      line-height: 2.3;
+      font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+      color: var(--text);
+      margin-top: 14px;
+    }
+
+    mark.vocab, mark.grammar {
+      position: relative;
+      border-radius: 2px;
+      padding: 1px 1px 0;
+      cursor: pointer;
+      transition: background .15s;
+      background-clip: padding-box;
+    }
+    mark.vocab {
+      background: var(--vocab-bg);
+      border-bottom: 2.5px solid var(--vocab-border);
+      color: inherit;
+    }
+    mark.grammar {
+      background: var(--grammar-bg);
+      border-bottom: 2.5px solid var(--grammar-border);
+      color: inherit;
+    }
+    mark.vocab:hover,   mark.vocab.lit   { background: var(--vocab-hover); }
+    mark.grammar:hover, mark.grammar.lit { background: var(--grammar-hover); }
+
+    mark[data-tip] { isolation: isolate; }
+    mark[data-tip]:hover::after {
+      content: attr(data-tip);
+      position: absolute;
+      bottom: calc(100% + 5px);
+      left: 50%;
+      transform: translateX(-50%);
+      white-space: nowrap;
+      background: rgba(15,23,42,.88);
+      color: #fff;
+      font-size: 12px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      padding: 4px 10px;
+      border-radius: 5px;
+      pointer-events: none;
+      z-index: 500;
+    }
+    mark[data-tip]:hover::before {
+      content: '';
+      position: absolute;
+      bottom: calc(100% + 1px);
+      left: 50%;
+      transform: translateX(-50%);
+      border: 4px solid transparent;
+      border-top-color: rgba(15,23,42,.88);
+      pointer-events: none;
+      z-index: 500;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 720px) {
+      .detail-grid { grid-template-columns: 1fr; }
+      .header-title { display: none; }
+    }
+
+    .panel-head {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+    .panel-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .panel-dot.v { background: var(--vocab-border); }
+    .panel-dot.g { background: var(--grammar-border); }
+    .count-badge {
+      margin-left: auto;
+      min-width: 20px; height: 20px;
+      padding: 0 6px;
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text-muted);
+      font-size: 11px; font-weight: 600;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+
+    .item-list {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      max-height: 70vh;
+      overflow-y: auto;
+    }
+
+    .item {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 11px 13px;
+      cursor: pointer;
+      transition: border-color .18s, background .18s, box-shadow .18s;
+    }
+    .item:hover { border-color: #94a3b8; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .item.lit   { box-shadow: 0 0 0 2px var(--primary); border-color: var(--primary); }
+    .item.vocab-item   { border-left: 3px solid var(--vocab-border); }
+    .item.vocab-item:hover { background: var(--vocab-bg); }
+    .item.vocab-item.lit   { background: var(--vocab-bg); }
+    .item.grammar-item { border-left: 3px solid var(--grammar-border); }
+    .item.grammar-item:hover { background: var(--grammar-bg); }
+    .item.grammar-item.lit   { background: var(--grammar-bg); }
+
+    .item-top {
+      display: flex; align-items: baseline; gap: 7px;
+      margin-bottom: 5px; flex-wrap: wrap;
+    }
+    .item-word {
+      font-size: 19px; font-weight: 700;
+      font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+      color: var(--text);
+    }
+    .item-reading { font-size: 13px; color: var(--text-muted);
+                    font-family: 'Hiragino Sans', 'Yu Gothic', sans-serif; }
+    .pos-chip, .conn-chip {
+      font-size: 11px; padding: 2px 7px; border-radius: 5px;
+      font-weight: 500; line-height: 1.5; white-space: nowrap;
+    }
+    .pos-chip  { background: #f1f5f9; color: var(--text-muted); margin-left: auto; }
+    .conn-chip { background: var(--grammar-bg); color: var(--grammar-border); margin-left: auto; }
+    .item-meaning { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 5px; }
+    .item-pattern { font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 4px;
+                    font-family: 'Hiragino Sans', 'Yu Gothic', sans-serif; }
+    .item-explain { font-size: 13px; color: var(--text); margin-bottom: 5px; }
+    .item-example {
+      font-size: 12px; color: var(--text-muted);
+      font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+      border-left: 2px solid var(--border);
+      padding-left: 8px; line-height: 1.6;
+    }
+
+    /* ───── Translation ───── */
+    .trans-block {
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px dashed var(--border);
+    }
+    .trans-block:last-child {
+      margin-bottom: 0;
+      padding-bottom: 0;
+      border-bottom: none;
+    }
+    .trans-jp {
+      font-size: 16px;
+      line-height: 2;
+      font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+    .trans-zh {
+      font-size: 14px;
+      line-height: 1.8;
+      color: var(--text-muted);
+      padding-left: 12px;
+      border-left: 3px solid var(--primary);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══ Header ═══ -->
+<header class="header">
+  <div class="header-inner">
+    <a class="logo" href="/">
+      <span class="logo-icon">🎌</span>
+      <span>日语学习</span>
+    </a>
+    <a class="btn-back" href="/">← 文章列表</a>
+    {% if article_title %}
+    <div class="header-sep"></div>
+    <div class="header-title">{{ article_title }}</div>
+    {% endif %}
+  </div>
+</header>
+
+<!-- ═══ Main ═══ -->
+<main class="main">
+
+  {% if article_title %}
+  <!-- 文章来源信息 -->
+  <div class="article-meta">
+    <div class="article-meta-title">{{ article_title }}</div>
+    {% if article_time %}<div class="article-meta-time">📅 {{ article_time }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- 输入卡片 -->
+  <div class="card">
+    <div class="card-head">
+      📝&nbsp; 日语文章
+    </div>
+    <div class="card-body">
+      <textarea id="inputText" class="jp-textarea"
+        placeholder="请粘贴日语文章，例如 NHK 新闻原文…&#10;&#10;例：今日、東京都内で大規模な停電が発生し、交通機関に大きな影響が出た。"
+        rows="6"></textarea>
+
+      <div class="input-footer">
+        <span class="hint">💡 Ctrl+Enter 快捷分析</span>
+        <button class="btn-analyze" id="analyzeBtn" onclick="doAnalyze()">
+          <span>开始分析 →</span>
+        </button>
+      </div>
+
+      <div class="error-box" id="errorBox"></div>
+    </div>
+  </div>
+
+  <!-- 分析结果（分析完成后显示） -->
+  <div class="result-wrap" id="resultWrap">
+
+    <div class="card annotated-card">
+      <div class="card-body">
+        <div class="legend">
+          <span class="legend-item"><span class="legend-pip v"></span>重点词汇 / 表达</span>
+          <span class="legend-item"><span class="legend-pip g"></span>重要语法型</span>
+          <span class="legend-tip">悬停查看注释 · 点击条目互相高亮</span>
+        </div>
+        <div class="annotated-text" id="annotatedText"></div>
+      </div>
+    </div>
+
+    <!-- 中文翻译 -->
+    <div class="card translation-card" id="translationCard" style="margin-bottom:20px; display:none;">
+      <div class="card-head">
+        🌐&nbsp; 中文翻译
+      </div>
+      <div class="card-body" id="translationBody"></div>
+    </div>
+
+    <div class="detail-grid">
+      <div class="card">
+        <div class="panel-head">
+          <span class="panel-dot v"></span>重点词汇 / 表达
+          <span class="count-badge" id="vocabCnt">0</span>
+        </div>
+        <div class="item-list" id="vocabList"></div>
+      </div>
+      <div class="card">
+        <div class="panel-head">
+          <span class="panel-dot g"></span>重要语法型
+          <span class="count-badge" id="gramCnt">0</span>
+        </div>
+        <div class="item-list" id="gramList"></div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+// 从 Flask 模板注入预填内容
+const PREFILL_TEXT  = {{ article_text  | tojson }};
+const PREFILL_TITLE = {{ article_title | tojson }};
+
+window.addEventListener('DOMContentLoaded', () => {
+  if (PREFILL_TEXT) {
+    document.getElementById('inputText').value = PREFILL_TEXT;
+  }
+});
+
+// ─── 分析 ────────────────────────────────────────────────────────────
+async function doAnalyze() {
+  const text = document.getElementById('inputText').value.trim();
+  if (!text) { showErr('请输入日语文章'); return; }
+
+  hideErr();
+  setLoading(true);
+
+  try {
+    const res  = await fetch('/analyze', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    renderResult(data);
+  } catch (err) {
+    showErr(err.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function setLoading(on) {
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = on;
+  btn.innerHTML = on
+    ? '<span class="spin"></span><span>分析中…</span>'
+    : '<span>开始分析 →</span>';
+}
+
+function showErr(msg) {
+  const el = document.getElementById('errorBox');
+  el.textContent = '⚠️ ' + msg;
+  el.classList.add('show');
+}
+function hideErr() { document.getElementById('errorBox').classList.remove('show'); }
+
+// ─── 渲染结果 ─────────────────────────────────────────────────────────
+let activeItemEl = null;
+let activeMrkEls = [];
+
+function renderResult(data) {
+  activeItemEl = null;
+  activeMrkEls = [];
+
+  document.getElementById('annotatedText').innerHTML = data.annotated_html || '';
+
+  // Render translation
+  const transCard = document.getElementById('translationCard');
+  const transBody = document.getElementById('translationBody');
+  if (data.translation && data.translation.length > 0) {
+    transCard.style.display = 'block';
+    transBody.innerHTML = data.translation.map(t => `
+      <div class="trans-block">
+        <div class="trans-jp">${esc(t.jp)}</div>
+        <div class="trans-zh">${esc(t.zh)}</div>
+      </div>
+    `).join('');
+  } else {
+    transCard.style.display = 'none';
+  }
+
+  const vocabList = document.getElementById('vocabList');
+  vocabList.innerHTML = '';
+  document.getElementById('vocabCnt').textContent = data.vocabulary.length;
+  data.vocabulary.forEach(v => vocabList.appendChild(mkVocabCard(v)));
+
+  const gramList = document.getElementById('gramList');
+  gramList.innerHTML = '';
+  document.getElementById('gramCnt').textContent = data.grammar.length;
+  data.grammar.forEach(g => gramList.appendChild(mkGramCard(g)));
+
+  const wrap = document.getElementById('resultWrap');
+  wrap.classList.add('show');
+  setTimeout(() => wrap.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
+}
+
+function mkVocabCard(v) {
+  const el = document.createElement('div');
+  el.className = 'item vocab-item';
+  el.innerHTML = `
+    <div class="item-top">
+      <span class="item-word">${esc(v.word)}</span>
+      <span class="item-reading">${esc(v.reading)}</span>
+      <span class="pos-chip">${esc(v.pos)}</span>
+    </div>
+    <div class="item-meaning">${esc(v.meaning)}</div>
+    ${v.example ? `<div class="item-example">${esc(v.example)}</div>` : ''}
+  `;
+  el.addEventListener('click', () => highlight(v.id, el));
+  return el;
+}
+
+function mkGramCard(g) {
+  const el = document.createElement('div');
+  el.className = 'item grammar-item';
+  el.innerHTML = `
+    <div class="item-top">
+      <span class="item-pattern">${esc(g.pattern)}</span>
+      <span class="conn-chip">${esc(g.connection)}</span>
+    </div>
+    <div class="item-explain">${esc(g.explanation)}</div>
+    ${g.example ? `<div class="item-example">${esc(g.example)}</div>` : ''}
+  `;
+  el.addEventListener('click', () => highlight(g.id, el));
+  return el;
+}
+
+function highlight(id, itemEl) {
+  activeMrkEls.forEach(m => m.classList.remove('lit'));
+  if (activeItemEl) activeItemEl.classList.remove('lit');
+
+  if (activeItemEl === itemEl) {
+    activeItemEl = null; activeMrkEls = [];
+    return;
+  }
+
+  activeItemEl = itemEl;
+  itemEl.classList.add('lit');
+  activeMrkEls = [...document.querySelectorAll(`mark[data-id="${CSS.escape(id)}"]`)];
+  activeMrkEls.forEach(m => m.classList.add('lit'));
+  if (activeMrkEls.length) {
+    activeMrkEls[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+document.getElementById('inputText').addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') doAnalyze();
+});
+</script>
+</body>
+</html>
