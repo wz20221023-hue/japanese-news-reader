@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>朝日新闻 日语学习</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --primary:       #4f6ef7;
+      --primary-dark:  #3a56d4;
+      --primary-light: #eef1fd;
+      --text:          #1e293b;
+      --text-muted:    #64748b;
+      --border:        #e2e8f0;
+      --bg:            #f1f5f9;
+      --white:         #ffffff;
+      --red-bg:        #fef2f2;
+      --red-border:    #fca5a5;
+      --red-text:      #dc2626;
+      --radius:        10px;
+      --shadow-sm:     0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.05);
+      --shadow:        0 4px 16px rgba(0,0,0,.09);
+      --shadow-hover:  0 8px 24px rgba(0,0,0,.13);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+                   'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* ───── Header ───── */
+    .header {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: var(--shadow-sm);
+    }
+    .header-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      height: 58px;
+      gap: 16px;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--primary);
+      text-decoration: none;
+    }
+    .logo-icon { font-size: 24px; }
+    .logo-sub {
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--text-muted);
+      margin-left: 2px;
+      display: none; /* 仅大屏显示 */
+    }
+    @media (min-width: 600px) { .logo-sub { display: inline; } }
+
+    .header-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .update-info {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .btn-refresh {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 16px;
+      background: var(--primary-light);
+      color: var(--primary);
+      border: 1px solid #c7d2fe;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .2s;
+      white-space: nowrap;
+    }
+    .btn-refresh:hover:not(:disabled) {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+    }
+    .btn-refresh:disabled { opacity: .5; cursor: not-allowed; }
+    .refresh-icon { font-size: 15px; transition: transform .4s; }
+    .btn-refresh.spinning .refresh-icon { animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ───── Main ───── */
+    .main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 28px 24px;
+    }
+
+    /* ───── Page states ───── */
+    .state-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 340px;
+      gap: 16px;
+      text-align: center;
+      color: var(--text-muted);
+    }
+    .state-icon { font-size: 48px; }
+    .state-title { font-size: 18px; font-weight: 600; color: var(--text); }
+    .state-sub   { font-size: 14px; }
+    .big-spin {
+      width: 40px; height: 40px;
+      border: 3px solid #e2e8f0;
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+
+    /* ───── Warning banner ───── */
+    .warn-banner {
+      display: none;
+      background: #fffbeb;
+      border: 1px solid #fcd34d;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #92400e;
+      margin-bottom: 18px;
+      gap: 8px;
+      align-items: flex-start;
+    }
+    .warn-banner.show { display: flex; }
+
+    /* ───── Section header ───── */
+    .section-header {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .section-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    .article-count {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    /* ───── Article grid ───── */
+    .article-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+    }
+    @media (max-width: 900px) { .article-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 560px) { .article-grid { grid-template-columns: 1fr; } }
+
+    /* ───── Article card ───── */
+    .article-card {
+      display: flex;
+      flex-direction: column;
+      background: var(--white);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      text-decoration: none;
+      color: inherit;
+      overflow: hidden;
+      transition: box-shadow .2s, transform .2s;
+      border: 1px solid transparent;
+    }
+    .article-card:hover {
+      box-shadow: var(--shadow-hover);
+      transform: translateY(-3px);
+      border-color: #c7d2fe;
+    }
+
+    .card-body {
+      padding: 18px 18px 14px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    .card-time {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .card-time::before {
+      content: '';
+      display: inline-block;
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: #34d399;
+      flex-shrink: 0;
+    }
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.5;
+      color: var(--text);
+      font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+      margin-bottom: 10px;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .card-summary {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.65;
+      font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      flex: 1;
+    }
+    .card-footer {
+      padding: 10px 18px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--primary);
+      background: #fafbff;
+      transition: background .2s;
+    }
+    .article-card:hover .card-footer {
+      background: var(--primary-light);
+    }
+
+    /* ───── Error box ───── */
+    .error-box {
+      display: none;
+      padding: 12px 16px;
+      background: var(--red-bg);
+      border: 1px solid var(--red-border);
+      border-radius: 8px;
+      color: var(--red-text);
+      font-size: 14px;
+      margin-bottom: 18px;
+      align-items: center;
+      gap: 10px;
+    }
+    .error-box.show { display: flex; }
+    .btn-retry {
+      margin-left: auto;
+      padding: 4px 12px;
+      background: none;
+      border: 1px solid var(--red-border);
+      border-radius: 6px;
+      color: var(--red-text);
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-retry:hover { background: var(--red-bg); }
+  </style>
+</head>
+<body>
+
+<!-- ═══ Header ═══ -->
+<header class="header">
+  <div class="header-inner">
+    <a class="logo" href="/">
+      <span class="logo-icon">🎌</span>
+      <span>朝日新闻</span>
+      <span class="logo-sub">日语学习</span>
+    </a>
+    <div class="header-right">
+      <span class="update-info" id="updateInfo"></span>
+      <button class="btn-refresh" id="refreshBtn" onclick="doRefresh()">
+        <span class="refresh-icon">↻</span>
+        <span id="refreshLabel">刷新文章</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ═══ Main ═══ -->
+<main class="main">
+
+  <!-- 错误提示 -->
+  <div class="error-box" id="errorBox">
+    <span id="errorMsg">加载失败</span>
+    <button class="btn-retry" onclick="loadArticles(false)">重试</button>
+  </div>
+
+  <!-- 警告横幅（抓取失败但有缓存时） -->
+  <div class="warn-banner" id="warnBanner">
+    <span>⚠️</span>
+    <span id="warnMsg"></span>
+  </div>
+
+  <!-- 加载中 -->
+  <div class="state-box" id="stateLoading">
+    <div class="big-spin"></div>
+    <div class="state-title">正在抓取朝日新闻最新文章…</div>
+    <div class="state-sub">首次加载需抓取 10 篇文章，约需 10-20 秒</div>
+  </div>
+
+  <!-- 空状态 -->
+  <div class="state-box" id="stateEmpty" style="display:none">
+    <div class="state-icon">📭</div>
+    <div class="state-title">暂无文章</div>
+    <div class="state-sub">点击「刷新文章」重新抓取</div>
+  </div>
+
+  <!-- 文章列表 -->
+  <div id="articleSection" style="display:none">
+    <div class="section-header">
+      <span class="section-title">今日新闻</span>
+      <span class="article-count" id="articleCount"></span>
+    </div>
+    <div class="article-grid" id="articleGrid"></div>
+  </div>
+
+</main>
+
+<script>
+// 页面加载时自动获取文章
+loadArticles(false);
+
+async function loadArticles(force) {
+  setLoadingState(true);
+  hideError();
+  hideWarn();
+
+  try {
+    const url = '/api/articles' + (force ? '?force=1' : '');
+    const res  = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    if (data.warning) showWarn(data.warning);
+
+    if (!data.articles || data.articles.length === 0) {
+      showEmptyState();
+    } else {
+      renderArticles(data.articles);
+      updateInfo(data);
+    }
+  } catch (err) {
+    showError(err.message);
+    showEmptyState();
+  } finally {
+    setLoadingState(false);
+  }
+}
+
+function doRefresh() { loadArticles(true); }
+
+// ─── 渲染 ─────────────────────────────────────────────────────────────
+function renderArticles(articles) {
+  const grid = document.getElementById('articleGrid');
+  grid.innerHTML = articles.map(a => `
+    <a class="article-card" href="/reader/${encodeURIComponent(a.id)}">
+      <div class="card-body">
+        <div class="card-time">${esc(a.time) || '今日'}</div>
+        <h2 class="card-title">${esc(a.title)}</h2>
+        ${a.summary
+          ? `<p class="card-summary">${esc(a.summary)}</p>`
+          : '<p class="card-summary" style="color:#94a3b8">（摘要未获取）</p>'}
+      </div>
+      <div class="card-footer">
+        开始分析 <span>→</span>
+      </div>
+    </a>
+  `).join('');
+
+  document.getElementById('articleCount').textContent = `共 ${articles.length} 篇`;
+  document.getElementById('stateLoading').style.display = 'none';
+  document.getElementById('stateEmpty').style.display   = 'none';
+  document.getElementById('articleSection').style.display = 'block';
+}
+
+function updateInfo(data) {
+  const el = document.getElementById('updateInfo');
+  if (data.updated_at) {
+    el.textContent = `今日 ${data.updated_at} 更新`;
+  } else if (data.date) {
+    el.textContent = `${data.date} 数据`;
+  }
+}
+
+function showEmptyState() {
+  document.getElementById('stateLoading').style.display = 'none';
+  document.getElementById('stateEmpty').style.display   = 'flex';
+  document.getElementById('articleSection').style.display = 'none';
+}
+
+// ─── 加载状态 ─────────────────────────────────────────────────────────
+function setLoadingState(on) {
+  const btn   = document.getElementById('refreshBtn');
+  const label = document.getElementById('refreshLabel');
+  const icon  = document.getElementById('refreshBtn').querySelector('.refresh-icon');
+
+  btn.disabled = on;
+  if (on) {
+    btn.classList.add('spinning');
+    label.textContent = '抓取中…';
+    document.getElementById('stateLoading').style.display = 'flex';
+    document.getElementById('articleSection').style.display = 'none';
+    document.getElementById('stateEmpty').style.display = 'none';
+  } else {
+    btn.classList.remove('spinning');
+    label.textContent = '刷新文章';
+  }
+}
+
+// ─── 提示 ─────────────────────────────────────────────────────────────
+function showError(msg) {
+  document.getElementById('errorMsg').textContent = '⚠️ ' + msg;
+  document.getElementById('errorBox').classList.add('show');
+}
+function hideError() { document.getElementById('errorBox').classList.remove('show'); }
+
+function showWarn(msg) {
+  document.getElementById('warnMsg').textContent = msg;
+  document.getElementById('warnBanner').classList.add('show');
+}
+function hideWarn() { document.getElementById('warnBanner').classList.remove('show'); }
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+</script>
+</body>
+</html>
