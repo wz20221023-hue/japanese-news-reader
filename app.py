@@ -15,7 +15,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ─── 配置 ────────────────────────────────────────────────────────────────
-DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', 'sk-2c009711003c4d7d95053cc5ed1ce3f6')
+DEEPSEEK_API_KEY = os.environ['DEEPSEEK_API_KEY']
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, 'articles.json')
