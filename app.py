@@ -420,7 +420,10 @@ pattern 字段写句型中出现在原文里的部分（4-12 字），如 "わ�
         msg = str(e)
         if any(k in msg for k in ('auth', 'Auth', '401', 'invalid_api_key', 'API key')):
             return jsonify({'error': 'API Key 无效，请检查环境变量 DEEPSEEK_API_KEY'}), 401
-        return jsonify({'error': f'分析失败：{msg}'}), 500
+        if '402' in msg or 'Insufficient Balance' in msg:
+            return jsonify({'error': 'AI 服务额度暂时用完了，请稍后再试'}), 503
+        print(f"[analyze] error: {msg}", flush=True)  # 详细错误只写日志，不返回给用户
+        return jsonify({'error': '分析失败，请稍后重试'}), 500
 
 
 def _build_annotated_html(text, vocab_list, grammar_list):
