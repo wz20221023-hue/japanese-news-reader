@@ -7,23 +7,35 @@ from flask import Flask, request, jsonify, render_template
 from openai import OpenAI
 from bs4 import BeautifulSoup
 import requests as http
+from dotenv import load_dotenv
+import html as htmllib
 import json
 import re
 import os
 import hashlib
+import time
+from collections import defaultdict, deque
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import deque
 
 # ─── 配置 ────────────────────────────────────────────────────────────────
-DEEPSEEK_API_KEY = os.environ['DEEPSEEK_API_KEY']
+load_dotenv()  # 本地开发时从 .env 读取；Render 上直接用环境变量
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, 'articles.json')
-VISIT_LOG  = deque(maxlen=200)  # 最近 200 条访问记录
-GEO_CACHE  = {}  # IP → 地理位置缓存
+JST        = ZoneInfo('Asia/Tokyo')  # Render 服务器是 UTC，日期统一按日本时间算
+MAX_CHARS  = 2000  # /analyze 单次最多分析的字数（控制 API 费用）
+SUMMARY_CHARS = 120  # 摘要最多显示的字数
 
-# 朝日新闻 RSS（RDF 格式，稳定可用，文章全文可直接抓取）
+# 防止滥用：网站是公开的，任何人都能调用 /analyze（花的是我的 API 额度）
+RATE_WINDOW   = 600   # 秒
+RATE_PER_IP   = 10    # 每个 IP 在 RATE_WINDOW 内最多分析几次
+DAILY_LIMIT   = 300   # 每个 gunicorn 进程每天最多分析几次（费用上限）
+REFRESH_COOLDOWN = 600  # 手动刷新新闻列表的最短间隔（秒），避免频繁访问朝日
+
+# 朝日新闻 RSS（RDF 格式）。只取标题、链接和官方摘要，不抓取正文
 ASAHI_RSS = 'https://www.asahi.com/rss/asahi/newsheadlines.rdf'
 
 HTTP_HEADS = {
@@ -38,75 +50,58 @@ HTTP_HEADS = {
 app = Flask(__name__)
 
 
-@app.before_request
-def _log_visit():
-    if request.path == '/visitors':
-        return
-    ip = request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or request.remote_addr
-    ua = request.headers.get('User-Agent', '?')
-    VISIT_LOG.append({
-        'time': datetime.now().strftime('%H:%M:%S'),
-        'ip':   ip,
-        'ua':   _short_ua(ua),
-        'path': request.path,
-    })
-
-
-def _short_ua(ua):
-    if 'MicroMessenger' in ua:
-        return '微信'
-    if 'iPhone' in ua:
-        return 'iPhone Safari'
-    if 'Android' in ua:
-        return 'Android'
-    if 'Mac' in ua and 'Safari' in ua:
-        return 'Mac Safari'
-    if 'Windows' in ua:
-        return 'Windows'
-    if 'curl' in ua:
-        return 'curl'
-    return ua[:40]
-
 
 # ─── 缓存 ────────────────────────────────────────────────────────────────
 
+CACHE_VERSION = 2  # v1 缓存里存有文章全文，升级后直接作废
+
+
 def _load_cache():
-    if os.path.exists(CACHE_FILE):
+    try:
         with open(CACHE_FILE, encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    if data.get('version') == CACHE_VERSION:
+        return data
     return {}
 
 
 def _save_cache(data):
-    with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+    # 先写临时文件再替换：线上有 2 个 gunicorn 进程，避免另一个进程读到写了一半的文件
+    tmp = f'{CACHE_FILE}.{os.getpid()}.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, CACHE_FILE)
 
 
 # ─── 朝日新闻 抓取 ──────────────────────────────────────────────────────
 
 def get_articles(force=False):
-    today = datetime.now().strftime('%Y-%m-%d')
-    if not force:
-        cache = _load_cache()
-        if cache.get('date') == today and cache.get('articles'):
-            return cache['articles'], None
+    today = datetime.now(JST).strftime('%Y-%m-%d')
+    cache = _load_cache()
+    fresh = cache.get('date') == today and cache.get('articles')
+    recently_updated = time.time() - cache.get('updated_ts', 0) < REFRESH_COOLDOWN
+    if fresh and (not force or recently_updated):
+        return cache['articles'], None
 
     try:
         articles = _scrape_asahi()
         _save_cache({
+            'version':    CACHE_VERSION,
             'date':       today,
-            'updated_at': datetime.now().strftime('%H:%M'),
+            'updated_at': datetime.now(JST).strftime('%H:%M'),
+            'updated_ts': time.time(),
             'articles':   articles,
         })
         return articles, None
     except Exception as exc:
-        cache = _load_cache()
         return cache.get('articles', []), str(exc)
 
 
 def _scrape_asahi():
     """
-    朝日新闻 RSS (RDF) → 并发抓取文章 HTML 正文。
+    朝日新闻 RSS (RDF) → 标题 / 链接 / 时间 + 官方摘要。
     """
     resp = http.get(ASAHI_RSS, headers=HTTP_HEADS, timeout=15)
     if resp.status_code != 200:
@@ -168,30 +163,27 @@ def _scrape_asahi():
     if not stubs:
         raise RuntimeError("朝日新闻 RSS 无法解析任何文章")
 
-    # 并发抓取文章正文（最多 10 篇）
-    top10   = stubs[:10]
-    details = [{}] * len(top10)
+    # 并发抓取每篇文章页里官方提供的摘要（最多 10 篇）。不抓取、不保存正文
+    top10     = stubs[:10]
+    summaries = [''] * len(top10)
 
     with ThreadPoolExecutor(max_workers=5) as pool:
         fmap = {
-            pool.submit(_fetch_asahi_body, s['url']): i
+            pool.submit(_fetch_asahi_summary, s['url']): i
             for i, s in enumerate(top10)
         }
         for fut in as_completed(fmap):
             idx = fmap[fut]
             try:
-                details[idx] = fut.result(timeout=15)
+                summaries[idx] = fut.result(timeout=15)
             except Exception:
-                details[idx] = {}
+                summaries[idx] = ''
 
     articles = []
     for i, stub in enumerate(top10):
-        d = details[i]
-        body_text = d.get('text', '') or stub['rss_desc']
-
-        # 摘要用 RSS description 或正文前 130 字
-        summary_src = stub['rss_desc'] or body_text
-        summary = (summary_src[:130] + '…') if len(summary_src) > 130 else summary_src
+        summary = summaries[i] or stub['rss_desc']
+        if len(summary) > SUMMARY_CHARS:
+            summary = summary[:SUMMARY_CHARS] + '…'
 
         articles.append({
             'id':      stub['id'],
@@ -199,51 +191,29 @@ def _scrape_asahi():
             'url':     stub['url'],
             'time':    stub['time'],
             'summary': summary,
-            'text':    body_text,
         })
 
     return articles
 
 
-# 朝日新闻文章页中需要过滤的非正文内容
-_ASAHI_NOISE = (
-    '有料会員になると', 'お気に入りのニュース', 'Googleで優先的',
-    '権利を保有', '著作権', '会員限定の有料記事',
-    'あわせて読みたい', '関連記事', 'シェアする',
-    '今すぐ「朝日新聞」', 'The Asahi Shimbun',
-)
-
-
-def _fetch_asahi_body(url: str) -> dict:
-    """从朝日新闻文章页提取正文。"""
+def _fetch_asahi_summary(url: str) -> str:
+    """读取文章页 <meta> 里朝日新闻自己公开的摘要（og:description / description）。"""
     try:
         resp = http.get(url, headers=HTTP_HEADS, timeout=15)
         resp.encoding = 'utf-8'
         soup = BeautifulSoup(resp.text, 'html.parser')
     except Exception:
-        return {}
+        return ''
 
-    # 正文通常在 <article> 内
-    main = soup.find('article') or soup.find('main') or soup.body
-    if not main:
-        return {}
-
-    body_parts = []
-    seen = set()
-
-    for p in main.find_all('p'):
-        txt = p.get_text(strip=True)
-        if len(txt) < 25:
-            continue
-        if any(kw in txt for kw in _ASAHI_NOISE):
-            continue
-        if txt in seen:
-            continue
-        seen.add(txt)
-        body_parts.append(txt)
-
-    full_text = '\n\n'.join(body_parts)
-    return {'text': full_text}
+    meta = (soup.find('meta', attrs={'property': 'og:description'})
+            or soup.find('meta', attrs={'name': 'description'}))
+    if not meta:
+        return ''
+    summary = (meta.get('content') or '').strip().rstrip('…')
+    # 官方摘要常在句子中间截断，只保留到最后一个「。」，方便翻译
+    if '。' in summary:
+        summary = summary[:summary.rindex('。') + 1]
+    return summary
 
 
 # ─── 路由 ────────────────────────────────────────────────────────────────
@@ -255,24 +225,48 @@ def index():
 
 @app.route('/reader')
 def reader_blank():
-    return render_template('reader.html',
-                           article_text='', article_title='', article_time='')
+    return render_template('reader.html', article=None)
 
 
 @app.route('/reader/<article_id>')
 def reader(article_id):
-    cache   = _load_cache()
-    article = next((a for a in cache.get('articles', [])
-                    if a['id'] == article_id), None)
-    if article:
-        return render_template(
-            'reader.html',
-            article_text=article.get('text', ''),
-            article_title=article.get('title', ''),
-            article_time=article.get('time', ''),
-        )
-    return render_template('reader.html',
-                           article_text='', article_title='', article_time='')
+    # Render 免费版重启后磁盘会清空，所以缓存里没有时先抓取一次
+    articles, _ = get_articles()
+    article = next((a for a in articles if a['id'] == article_id), None)
+    return render_template('reader.html', article=article)
+
+
+# ─── 简单限流（每个进程各自计数，够用即可） ─────────────────────────────
+
+_ip_hits = defaultdict(deque)
+_daily   = {'date': '', 'count': 0}
+
+
+def _client_ip():
+    # Render 在代理后面，真实 IP 在 X-Forwarded-For 的第一个
+    fwd = request.headers.get('X-Forwarded-For', '')
+    return fwd.split(',')[0].strip() or request.remote_addr or ''
+
+
+def _rate_limited():
+    """超过限制时返回错误提示，否则记一次并返回 None。"""
+    now   = time.time()
+    today = datetime.now(JST).strftime('%Y-%m-%d')
+    if _daily['date'] != today:
+        _daily.update(date=today, count=0)
+        _ip_hits.clear()
+    if _daily['count'] >= DAILY_LIMIT:
+        return '今天的分析次数已用完，请明天再试'
+
+    hits = _ip_hits[_client_ip()]
+    while hits and now - hits[0] > RATE_WINDOW:
+        hits.popleft()
+    if len(hits) >= RATE_PER_IP:
+        return f'请求太频繁，请 {RATE_WINDOW // 60} 分钟后再试'
+
+    hits.append(now)
+    _daily['count'] += 1
+    return None
 
 
 @app.route('/api/articles')
@@ -290,54 +284,6 @@ def api_articles():
     return jsonify(resp)
 
 
-@app.route('/visitors')
-def visitors():
-    log = list(VISIT_LOG)
-    log.reverse()
-    # 批量为新 IP 查地理位置
-    new_ips = {v['ip'] for v in log if v['ip'] not in GEO_CACHE and not v['ip'].startswith('127.')}
-    for ip in new_ips:
-        try:
-            r = http.get(f'https://ipapi.co/{ip}/json/', timeout=5)
-            if r.status_code == 200:
-                d = r.json()
-                city = d.get('city', '')
-                region = d.get('region', '')
-                country = d.get('country_name', '')
-                GEO_CACHE[ip] = f'{city}, {region}, {country}' if city else country or '未知'
-            else:
-                GEO_CACHE[ip] = '—'
-        except Exception:
-            GEO_CACHE[ip] = '—'
-    rows = ''.join(
-        f'<tr><td>{v["time"]}</td><td style="color:#4f6ef7">{v["ip"]}</td>'
-        f'<td>{GEO_CACHE.get(v["ip"],"—")}</td>'
-        f'<td>{v["ua"]}</td><td>{v["path"]}</td></tr>'
-        for v in log
-    )
-    return f'''<!DOCTYPE html>
-<html lang="zh-CN">
-<head><meta charset="UTF-8"><title>访问记录</title>
-<style>
-body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;background:#f1f5f9}}
-h1{{font-size:20px;margin-bottom:16px}}
-table{{width:100%;border-collapse:collapse;background:white;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
-th,td{{padding:10px 14px;text-align:left;font-size:14px;border-bottom:1px solid #e2e8f0}}
-th{{background:#f8fafc;font-weight:600;color:#64748b;font-size:12px;text-transform:uppercase}}
-tr:hover{{background:#f8fafc}}
-a{{color:#4f6ef7;text-decoration:none}}
-</style></head>
-<body>
-<h1>最近访问记录 ({len(log)} 条)</h1>
-<table>
-<tr><th>时间</th><th>IP</th><th>位置</th><th>设备</th><th>路径</th></tr>
-{rows}
-</table>
-<p style="color:#94a3b8;font-size:12px;margin-top:12px">自动刷新中…</p>
-<script>setTimeout(()=>location.reload(),10000)</script>
-</body></html>'''
-
-
 @app.route('/analyze', methods=['POST'])
 def analyze():
     data = request.get_json(force=True, silent=True)
@@ -347,6 +293,13 @@ def analyze():
     text = data.get('text', '').strip()
     if not text:
         return jsonify({'error': '请输入日语文章'}), 400
+    if len(text) > MAX_CHARS:
+        return jsonify({'error': f'文章太长（{len(text)} 字），请控制在 {MAX_CHARS} 字以内'}), 400
+    if not DEEPSEEK_API_KEY:
+        return jsonify({'error': '服务器未设置 DEEPSEEK_API_KEY 环境变量'}), 500
+    limit_msg = _rate_limited()
+    if limit_msg:
+        return jsonify({'error': limit_msg}), 429
 
     orig_len = len(text)
     print(f"[analyze] 原文长度: {orig_len} 字符", flush=True)
@@ -411,7 +364,7 @@ pattern 字段写句型中出现在原文里的部分（4-12 字），如 "わ�
     {{"id":"v1","word":"公表","reading":"こうひょう","pos":"名詞・サ変","meaning":"公布","example":"結果を公表した。"}}
   ],
   "grammar": [
-    {{"id":"g1","pattern":"は","connection":"名詞＋は","explanation":"提示主题","example":"私は学生です。"}}
+    {{"id":"g1","pattern":"に基づいて","connection":"名詞＋に基づいて","explanation":"以……为根据","example":"調査結果に基づいて判断する。"}}
   ],
   "translation": [
     {{"jp":"段落原文","zh":"中文翻译"}}
@@ -436,6 +389,7 @@ pattern 字段写句型中出现在原文里的部分（4-12 字），如 "わ�
             ],
             temperature=0.1,
             max_tokens=8000,
+            response_format={'type': 'json_object'},
         )
 
         raw = response.choices[0].message.content.strip()
@@ -465,7 +419,7 @@ pattern 字段写句型中出现在原文里的部分（4-12 字），如 "わ�
     except Exception as e:
         msg = str(e)
         if any(k in msg for k in ('auth', 'Auth', '401', 'invalid_api_key', 'API key')):
-            return jsonify({'error': 'API Key 无效，请检查 app.py 中的 DEEPSEEK_API_KEY'}), 401
+            return jsonify({'error': 'API Key 无效，请检查环境变量 DEEPSEEK_API_KEY'}), 401
         return jsonify({'error': f'分析失败：{msg}'}), 500
 
 
@@ -476,9 +430,10 @@ def _build_annotated_html(text, vocab_list, grammar_list):
     1. 先标 grammar（短功能语素），再标 vocab（长实词）
     2. 同一次匹配避免标到已有 <mark> 内部
     3. 每种模式至多标前 3 次出现
+    4. 原文和 AI 返回的内容都先做 HTML 转义，防止注入（XSS）
     """
-    # 原文换行 → <br>
-    html = text.replace('\n', '<br>')
+    # 原文转义后，换行 → <br>
+    html = htmllib.escape(text, quote=False).replace('\n', '<br>')
 
     # 收集所有标注：(pattern, class, data-id, data-tip, priority)
     # priority 越小越先标：grammar=0, vocab=1
@@ -496,6 +451,8 @@ def _build_annotated_html(text, vocab_list, grammar_list):
     annotations.sort(key=lambda x: (x[4], -len(x[0])))
 
     for pattern, cls, aid, tip, _pri in annotations:
+        pattern = htmllib.escape(pattern, quote=False)
+        aid, tip = htmllib.escape(aid), htmllib.escape(tip)
         # 短模式限制出现次数，避免匹配到词内部
         max_occur = 1 if len(pattern) <= 1 else (2 if len(pattern) <= 2 else 3)
         count = 0

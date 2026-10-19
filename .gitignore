@@ -3,3 +3,6 @@ __pycache__/
 .DS_Store
 articles.json
 *.pyc
+.env
+.pytest_cache/
+articles.json.*.tmp

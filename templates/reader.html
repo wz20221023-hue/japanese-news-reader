@@ -123,6 +123,13 @@
       font-size: 13px;
       color: var(--text-muted);
     }
+    .source-link { color: var(--primary); text-decoration: none; font-weight: 600; }
+    .source-link:hover { text-decoration: underline; }
+    .article-meta-note {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
 
     /* ───── Cards ───── */
     .card {
@@ -439,9 +446,9 @@
       <span>日语学习</span>
     </a>
     <a class="btn-back" href="/">← 文章列表</a>
-    {% if article_title %}
+    {% if article %}
     <div class="header-sep"></div>
-    <div class="header-title">{{ article_title }}</div>
+    <div class="header-title">{{ article.title }}</div>
     {% endif %}
   </div>
 </header>
@@ -449,11 +456,15 @@
 <!-- ═══ Main ═══ -->
 <main class="main">
 
-  {% if article_title %}
-  <!-- 文章来源信息 -->
+  {% if article %}
+  <!-- 文章来源信息：只显示标题、时间、原文链接；正文请到朝日新闻阅读 -->
   <div class="article-meta">
-    <div class="article-meta-title">{{ article_title }}</div>
-    {% if article_time %}<div class="article-meta-time">📅 {{ article_time }}</div>{% endif %}
+    <div class="article-meta-title">{{ article.title }}</div>
+    <div class="article-meta-time">
+      {% if article.time %}📅 {{ article.time }} · {% endif %}
+      <a class="source-link" href="{{ article.url }}" target="_blank" rel="noopener">朝日新聞で全文を読む ↗</a>
+    </div>
+    <div class="article-meta-note">下方已填入官方摘要。想分析更多内容，可以把原文中的段落粘贴进来（最多 2000 字）。</div>
   </div>
   {% endif %}
 
@@ -465,7 +476,7 @@
     <div class="card-body">
       <textarea id="inputText" class="jp-textarea"
         placeholder="请粘贴日语文章，例如 NHK 新闻原文…&#10;&#10;例：今日、東京都内で大規模な停電が発生し、交通機関に大きな影響が出た。"
-        rows="6"></textarea>
+        rows="6" maxlength="2000"></textarea>
 
       <div class="input-footer">
         <span class="hint">💡 Ctrl+Enter 快捷分析</span>
@@ -521,9 +532,8 @@
 </main>
 
 <script>
-// 从 Flask 模板注入预填内容
-const PREFILL_TEXT  = {{ article_text  | tojson }};
-const PREFILL_TITLE = {{ article_title | tojson }};
+// 从 Flask 模板注入预填内容（官方摘要）
+const PREFILL_TEXT = {{ (article.summary if article else '') | tojson }};
 
 window.addEventListener('DOMContentLoaded', () => {
   if (PREFILL_TEXT) {
