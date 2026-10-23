@@ -57,6 +57,9 @@ cp .env.example .env          # then put your DeepSeek API key in .env
 python app.py                 # open http://localhost:5000
 ```
 
+On macOS you can also double-click `start.command`: it creates the virtual environment
+on first run, starts the app (port 5000, or 5001 if 5000 is busy) and opens the browser.
+
 Run the tests:
 
 ```bash
