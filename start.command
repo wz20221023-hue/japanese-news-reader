@@ -4,7 +4,10 @@
 #  由桌面图标自动调用，也可直接双击运行
 # ═══════════════════════════════════════════════════════════
 
-PROJECT_DIR="/Users/wang/japanese-news-reader"
+# 脚本所在的文件夹就是项目目录（clone 到哪里都能用）
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 从桌面快捷方式（链接或副本）启动时脚本旁边没有 app.py，改用默认位置
+[ -f "$PROJECT_DIR/app.py" ] || PROJECT_DIR="$HOME/japanese-news-reader"
 
 # ── 彩色输出 ──────────────────────────────────────────────
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[0;34m'; N='\033[0m'
