@@ -130,6 +130,49 @@
       font-size: 12px;
       color: #94a3b8;
     }
+    .article-meta-note a { color: var(--primary); }
+    .article-meta-note.full { color: #047857; }
+    .article-meta-note.warn { color: #b45309; }
+    .owner-badge {
+      margin-left: auto;
+      font-size: 12px;
+      color: #047857;
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      border-radius: 999px;
+      padding: 3px 10px;
+      white-space: nowrap;
+      text-decoration: none;
+    }
+
+    /* 长文章分段 */
+    .parts-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      background: var(--white);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      padding: 10px 16px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .parts-bar[hidden] { display: none; }
+    .parts-label { font-weight: 600; color: var(--text); }
+    .parts-btns { margin-left: auto; display: flex; gap: 8px; }
+    .part-btn {
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--white);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .part-btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+    .part-btn:disabled { opacity: .4; cursor: not-allowed; }
 
     /* ───── Cards ───── */
     .card {
@@ -450,6 +493,9 @@
     <div class="header-sep"></div>
     <div class="header-title">{{ article.title }}</div>
     {% endif %}
+    {% if owner %}
+    <a class="owner-badge" href="/logout" title="点这里退出">🔓 全文模式 · 退出</a>
+    {% endif %}
   </div>
 </header>
 
@@ -464,9 +510,27 @@
       {% if article.time %}📅 {{ article.time }} · {% endif %}
       <a class="source-link" href="{{ article.url }}" target="_blank" rel="noopener">朝日新聞で全文を読む ↗</a>
     </div>
-    <div class="article-meta-note">下方已填入官方摘要。想分析更多内容，可以把原文中的段落粘贴进来（最多 2000 字）。</div>
+    {% if full and full.text %}
+    <div class="article-meta-note full">🔓 下方是全文（只有登录的你看得到），共 {{ full.text | length }} 字，超过 {{ max_chars }} 字会自动分段分析。</div>
+      {% if full.paywalled %}
+    <div class="article-meta-note warn">这是付费文章，服务器只拿到免费的前半部分。登录朝日后在原文页点书签「📖 日语分析」，可以把你看得到的全文送过来。</div>
+      {% endif %}
+    {% elif owner %}
+    <div class="article-meta-note warn">全文没抓到，下方是官方摘要。可以在原文页点书签「📖 日语分析」把正文送过来。</div>
+    {% else %}
+    <div class="article-meta-note">下方是官方摘要。读全文：打开原文，点书签栏里的「📖 日语分析」，正文会自动送到这里（<a href="/#bookmarklet">安装书签</a>）。</div>
+    {% endif %}
   </div>
   {% endif %}
+
+  <!-- 书签工具送来的文章（标题和链接由浏览器填入，服务器看不到） -->
+  <div class="article-meta" id="importMeta" hidden>
+    <div class="article-meta-title" id="importTitle"></div>
+    <div class="article-meta-time">
+      <a class="source-link" id="importLink" target="_blank" rel="noopener noreferrer" hidden>原文 ↗</a>
+    </div>
+    <div class="article-meta-note" id="importNote"></div>
+  </div>
 
   <!-- 输入卡片 -->
   <div class="card">
@@ -476,10 +540,10 @@
     <div class="card-body">
       <textarea id="inputText" class="jp-textarea"
         placeholder="请粘贴日语文章，例如 NHK 新闻原文…&#10;&#10;例：今日、東京都内で大規模な停電が発生し、交通機関に大きな影響が出た。"
-        rows="6" maxlength="2000"></textarea>
+        rows="6"></textarea>
 
       <div class="input-footer">
-        <span class="hint">💡 Ctrl+Enter 快捷分析</span>
+        <span class="hint"><span id="charCount"></span> · 💡 Ctrl+Enter 快捷分析</span>
         <button class="btn-analyze" id="analyzeBtn" onclick="doAnalyze()">
           <span>开始分析 →</span>
         </button>
@@ -491,6 +555,14 @@
 
   <!-- 分析结果（分析完成后显示） -->
   <div class="result-wrap" id="resultWrap">
+
+    <div class="parts-bar" hidden>
+      <span class="parts-label"></span>
+      <span class="parts-btns">
+        <button class="part-btn part-prev" type="button">← 上一部分</button>
+        <button class="part-btn primary part-next" type="button">下一部分 →</button>
+      </span>
+    </div>
 
     <div class="card annotated-card">
       <div class="card-body">
@@ -528,55 +600,141 @@
       </div>
     </div>
 
+    <div class="parts-bar" hidden style="margin-top:20px">
+      <span class="parts-label"></span>
+      <span class="parts-btns">
+        <button class="part-btn part-prev" type="button">← 上一部分</button>
+        <button class="part-btn primary part-next" type="button">下一部分 →</button>
+      </span>
+    </div>
+
   </div>
 </main>
 
+<script src="/static/jnr.js"></script>
 <script>
-// 从 Flask 模板注入预填内容（官方摘要）
-const PREFILL_TEXT = {{ (article.summary if article else '') | tojson }};
+// 从 Flask 模板注入预填内容：站长看到全文，其他人看到官方摘要
+const PREFILL_TEXT = {{ ((full.text if full and full.text else article.summary) if article else '') | tojson }};
+const MAX_CHARS = {{ max_chars }};
+const input = document.getElementById('inputText');
 
 window.addEventListener('DOMContentLoaded', () => {
-  if (PREFILL_TEXT) {
-    document.getElementById('inputText').value = PREFILL_TEXT;
+  // 书签工具送来的正文在 # 后面：读出来后清掉，地址栏不会留着一大串
+  const imported = JNR.decodeImport(location.hash);
+  if (imported) {
+    history.replaceState(null, '', location.pathname + location.search);
+    input.value = imported.text;
+    showImport(imported);
+  } else if (PREFILL_TEXT) {
+    input.value = PREFILL_TEXT;
   }
+  updateCount();
 });
 
-// ─── 分析 ────────────────────────────────────────────────────────────
-async function doAnalyze() {
-  const text = document.getElementById('inputText').value.trim();
-  if (!text) { showErr('请输入日语文章'); return; }
-
-  hideErr();
-  setLoading(true);
-
-  try {
-    const res  = await fetch('/analyze', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ text }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    renderResult(data);
-  } catch (err) {
-    showErr(err.message);
-  } finally {
-    setLoading(false);
+function showImport(imp) {
+  document.getElementById('importTitle').textContent = imp.title || '（没有标题）';
+  const link = document.getElementById('importLink');
+  if (imp.url) {
+    link.href = imp.url;
+    link.textContent = `原文 ↗（${new URL(imp.url).hostname}）`;
+    link.hidden = false;
   }
+  const n = imp.text.length.toLocaleString();
+  document.getElementById('importNote').textContent =
+    `已从原文页面导入 ${n} 字` +
+    (imp.truncated ? '（原文太长，只带了前 10,000 字）' : '') +
+    `。点「开始分析」，超过 ${MAX_CHARS.toLocaleString()} 字会自动分段。`;
+  document.getElementById('importMeta').hidden = false;
 }
 
-function setLoading(on) {
+function updateCount() {
+  const text = input.value.trim();
+  const el = document.getElementById('charCount');
+  if (text.length > MAX_CHARS) {
+    const k = JNR.splitParts(text, MAX_CHARS).length;
+    el.textContent = `${text.length.toLocaleString()} 字，会分 ${k} 部分依次分析`;
+  } else {
+    el.textContent = `${text.length.toLocaleString()} / ${MAX_CHARS.toLocaleString()} 字`;
+  }
+}
+input.addEventListener('input', updateCount);
+
+// ─── 分析（长文章分成几部分，一次分析一部分） ─────────────────────────
+let parts = [];      // 每部分的文字
+let partData = [];   // 已经分析过的结果，来回翻页不用重新调用 AI
+let partIdx = 0;
+let busy = false;
+
+async function doAnalyze() {
+  const text = input.value.trim();
+  if (!text) { showErr('请输入日语文章'); return; }
+  parts = JNR.splitParts(text, MAX_CHARS);
+  partData = [];
+  await showPart(0);
+}
+
+async function showPart(i) {
+  if (busy || i < 0 || i >= parts.length) return;
+  hideErr();
+  if (!partData[i]) {
+    setLoading(true, i);
+    try {
+      const res = await fetch('/analyze', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ text: parts[i] }),
+      });
+      // Render 刚醒来时可能返回 HTML 错误页，不是 JSON
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `服务器暂时没响应（HTTP ${res.status}），请稍后重试`);
+      partData[i] = data;
+    } catch (err) {
+      showErr(err.message);
+      return;
+    } finally {
+      setLoading(false);
+    }
+  }
+  partIdx = i;
+  renderResult(partData[i]);
+  renderPartsBars();
+}
+
+function renderPartsBars() {
+  document.querySelectorAll('.parts-bar').forEach(bar => {
+    bar.hidden = parts.length < 2;
+    if (bar.hidden) return;
+    bar.querySelector('.parts-label').textContent =
+      `第 ${partIdx + 1} / ${parts.length} 部分 · ${parts[partIdx].length.toLocaleString()} 字`;
+    bar.querySelector('.part-prev').disabled = busy || partIdx === 0;
+    bar.querySelector('.part-next').disabled = busy || partIdx === parts.length - 1;
+  });
+}
+document.querySelectorAll('.part-prev').forEach(b => b.addEventListener('click', () => showPart(partIdx - 1)));
+document.querySelectorAll('.part-next').forEach(b => b.addEventListener('click', () => showPart(partIdx + 1)));
+
+function setLoading(on, i = 0) {
+  busy = on;
   const btn = document.getElementById('analyzeBtn');
   btn.disabled = on;
+  const label = parts.length > 1 ? `分析第 ${i + 1}/${parts.length} 部分…` : '分析中…';
   btn.innerHTML = on
-    ? '<span class="spin"></span><span>分析中…</span>'
+    ? `<span class="spin"></span><span>${label}</span>`
     : '<span>开始分析 →</span>';
+  document.querySelectorAll('.part-next, .part-prev').forEach(b => { if (on) b.disabled = true; });
+  if (on) {
+    document.querySelectorAll('.part-next').forEach(b => { b.textContent = '分析中…'; });
+  } else {
+    document.querySelectorAll('.part-next').forEach(b => { b.textContent = '下一部分 →'; });
+    renderPartsBars();
+  }
 }
 
 function showErr(msg) {
   const el = document.getElementById('errorBox');
   el.textContent = '⚠️ ' + msg;
   el.classList.add('show');
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 function hideErr() { document.getElementById('errorBox').classList.remove('show'); }
 

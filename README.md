@@ -9,24 +9,36 @@ Asahi Shimbun RSS feed, and for any Japanese text it uses the DeepSeek API to:
 - show a **word list** with reading, part of speech, meaning and example sentence,
 - give a **paragraph-by-paragraph Chinese translation**.
 
+Long articles are split into parts of up to 2,000 characters and analyzed one part at a time.
+
 **Live demo:** https://japanese-news-reader.onrender.com
 (free Render instance — the first visit after a quiet period takes about 30–60 seconds to wake up)
 
 ![Home page](docs/screenshot-home.png)
 
-## Copyright note
+## Full text and copyright
 
-The app does **not** copy or republish news articles. For each article it shows only the
+The site is public, so it does **not** republish news articles. Visitors see only the
 headline, a link to the original page, and the short summary that the publisher itself
-provides in the page's `og:description` meta tag. The learner can read the full article on
-asahi.com and paste paragraphs into the analyzer (max 2,000 characters).
+provides in the page's `og:description` meta tag.
+
+There are two ways to study the full text:
+
+- **Owner mode (for my own study).** When `OWNER_PASSWORD` is set, I can log in at `/login`.
+  After that, opening an article shows its full text, fetched for me only. It is kept in
+  memory for a few hours and never written to the public cache or shown to other visitors.
+- **Bookmarklet (for anyone).** The home page has a "📖 日语分析" bookmarklet. Clicking it on an
+  article page (Asahi, NHK or any Japanese site) sends the text you are reading in your own
+  browser to the reader. The text travels in the URL fragment (`#…`), so the server never
+  receives or stores it until you press "analyze". Select some text first to send only that
+  part.
 
 ## Tech stack
 
 | Part | Technology |
 | --- | --- |
 | Backend | Python 3, Flask |
-| AI analysis | DeepSeek API (`deepseek-chat`, called via the `openai` SDK) |
+| AI analysis | DeepSeek API (`deepseek-flash`, called via the `openai` SDK) |
 | News source | Asahi Shimbun RSS + `requests` / BeautifulSoup |
 | Frontend | Jinja2 templates, plain HTML/CSS/JavaScript |
 | Production server | gunicorn |
@@ -39,7 +51,11 @@ asahi.com and paste paragraphs into the analyzer (max 2,000 characters).
 Browser ──GET /api/articles──▶ Flask ──▶ Asahi RSS → title / link / official summary
                                   (cached once per day in articles.json, JST date)
 
-Browser ──POST /analyze {text}─▶ Flask ──▶ DeepSeek API (JSON mode)
+Owner   ──GET /reader/<id>───▶ Flask ──▶ article page → full text (memory only, owner only)
+
+Article page ──bookmarklet──▶ /reader#import=… (text stays in the browser)
+
+Browser ──POST /analyze {text ≤ 2,000}─▶ Flask ──▶ DeepSeek API (JSON mode)
                                   ◀── vocabulary / grammar / translation (JSON)
         ◀── JSON + annotated_html (Python inserts <mark> tags, HTML-escaped)
 ```
@@ -71,13 +87,19 @@ pytest
 
 | Name | Required | Description |
 | --- | --- | --- |
-| `DEEPSEEK_API_KEY` | yes | API key from https://platform.deepseek.com |
+| `DEEPSEEK_API_KEY` | yes | API key from https://platform.deepseek.com (no quotes or spaces) |
+| `DEEPSEEK_MODEL` | no | Model name (default `deepseek-flash`; `deepseek-chat` was retired on 2026-07-24) |
+| `OWNER_PASSWORD` | no | Turns on owner mode: log in at `/login` to see full text |
 | `PORT` | set by Render | Port gunicorn binds to in production (see `Procfile`) |
 | `FLASK_PORT` | no | Port for local `python app.py` (default `5000`) |
 
+At startup the log shows whether the key is set, its last four characters and the model
+name, so you can check the deployed key against the DeepSeek dashboard.
+
 Because the site is public and every analysis uses my API credit, `/analyze` has simple
-limits: max 2,000 characters per request, 10 requests per IP every 10 minutes, and a daily
-cap per server process. The news list can be force-refreshed at most once every 10 minutes.
+limits: max 2,000 characters per request (the reader splits longer texts), 10 requests per
+IP every 10 minutes, and a daily cap per server process. Login attempts are limited too.
+The news list can be force-refreshed at most once every 10 minutes.
 
 Locally, variables are read from `.env` (ignored by git). On Render, set them in
 **Dashboard → your service → Environment**.
@@ -88,7 +110,7 @@ Create a *Web Service* from this repository:
 
 - Build command: `pip install -r requirements.txt`
 - Start command: taken from `Procfile` (`gunicorn app:app ...`)
-- Environment: add `DEEPSEEK_API_KEY`
+- Environment: add `DEEPSEEK_API_KEY` (and `OWNER_PASSWORD` if you want owner mode)
 
 ## About AI-assisted development
 

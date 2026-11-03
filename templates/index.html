@@ -286,6 +286,81 @@
       white-space: nowrap;
     }
     .btn-retry:hover { background: var(--red-bg); }
+
+    /* ───── 全文模式标记 / 站长登录 ───── */
+    .owner-badge {
+      font-size: 12px;
+      color: #047857;
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      border-radius: 999px;
+      padding: 3px 10px;
+      white-space: nowrap;
+      text-decoration: none;
+    }
+    .page-footer {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 8px 24px 32px;
+      font-size: 12px;
+      color: #94a3b8;
+      text-align: right;
+    }
+    .page-footer a { color: #94a3b8; }
+
+    /* ───── 书签工具 ───── */
+    .bm-card {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      background: var(--white);
+      border: 1px solid #c7d2fe;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      padding: 14px 18px;
+      margin-bottom: 22px;
+    }
+    .bm-text { flex: 1; min-width: 0; }
+    .bm-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    .bm-desc  { font-size: 13px; color: var(--text-muted); line-height: 1.7; }
+    .bm-howto { margin-top: 6px; font-size: 13px; color: var(--text-muted); }
+    .bm-howto summary { cursor: pointer; color: var(--primary); font-weight: 600; }
+    .bm-howto ul { margin: 6px 0 0 18px; line-height: 1.8; }
+    .bm-howto kbd {
+      font-family: inherit; font-size: 11px;
+      border: 1px solid var(--border); border-bottom-width: 2px;
+      border-radius: 4px; padding: 0 4px; background: var(--bg);
+    }
+    .bm-actions { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+    .bm-btn {
+      display: inline-block;
+      padding: 8px 16px;
+      background: var(--primary);
+      color: #fff;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+      text-align: center;
+      cursor: grab;
+      white-space: nowrap;
+    }
+    .bm-copy {
+      padding: 6px 12px;
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .bm-copy:hover { color: var(--text); border-color: #94a3b8; }
+    .bm-tip { font-size: 12px; color: #047857; min-height: 1em; text-align: center; }
+    @media (max-width: 560px) {
+      .bm-card { flex-direction: column; }
+      .bm-actions { flex-direction: row; flex-wrap: wrap; }
+    }
   </style>
 </head>
 <body>
@@ -299,6 +374,9 @@
       <span class="logo-sub">日语学习</span>
     </a>
     <div class="header-right">
+      {% if owner %}
+      <a class="owner-badge" href="/logout" title="点这里退出">🔓 全文模式 · 退出</a>
+      {% endif %}
       <span class="update-info" id="updateInfo"></span>
       <button class="btn-refresh" id="refreshBtn" onclick="doRefresh()">
         <span class="refresh-icon">↻</span>
@@ -310,6 +388,29 @@
 
 <!-- ═══ Main ═══ -->
 <main class="main">
+
+  <!-- 书签工具：在新闻页面点一下，把正文送到阅读页 -->
+  <section class="bm-card" id="bookmarklet">
+    <div class="bm-text">
+      <div class="bm-title">📖 读全文：一键书签</div>
+      <div class="bm-desc">
+        在朝日新闻（或 NHK 等任何日语网页）的文章页点一下这个书签，你正在看的正文就会送到这里分析，长文章自动分段。
+        先选中一段文字再点，就只分析选中的部分。
+      </div>
+      <details class="bm-howto">
+        <summary>怎么安装？</summary>
+        <ul>
+          <li><b>电脑：</b>把右边的蓝色按钮拖到浏览器的书签栏。看不到书签栏的话，按 <kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd>。</li>
+          <li><b>手机：</b>点「复制书签代码」，随便收藏一个网页，再编辑这个书签，把网址换成刚复制的代码。用的时候在文章页打开书签列表点它（Android 版 Chrome：在地址栏输入「日语分析」再点它）。</li>
+        </ul>
+      </details>
+    </div>
+    <div class="bm-actions">
+      <a class="bm-btn" id="bmLink" href="#bookmarklet" title="拖到书签栏">📖 日语分析</a>
+      <button class="bm-copy" id="bmCopy" type="button">复制书签代码</button>
+      <div class="bm-tip" id="bmTip"></div>
+    </div>
+  </section>
 
   <!-- 错误提示 -->
   <div class="error-box" id="errorBox">
@@ -348,9 +449,38 @@
 
 </main>
 
+{% if not owner %}
+<footer class="page-footer"><a href="/login">站长登录</a></footer>
+{% endif %}
+
+<script src="/static/jnr.js"></script>
 <script>
 // 页面加载时自动获取文章
 loadArticles(false);
+
+// ─── 书签工具 ─────────────────────────────────────────────────────────
+(function setupBookmarklet() {
+  const link = document.getElementById('bmLink');
+  const tip  = document.getElementById('bmTip');
+  const href = JNR.bookmarkletHref(location.origin);
+  link.href = href;
+  const say = msg => { tip.textContent = msg; setTimeout(() => { tip.textContent = ''; }, 4000); };
+  // 在本站直接点它没有意义：提示拖到书签栏（拖动不受影响）
+  link.addEventListener('click', e => { e.preventDefault(); say('拖到书签栏，在文章页再点'); });
+  document.getElementById('bmCopy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(href);
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = href;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    say('已复制，粘贴到书签的网址里');
+  });
+})();
 
 async function loadArticles(force) {
   setLoadingState(true);

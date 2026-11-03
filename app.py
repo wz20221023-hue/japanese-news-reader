@@ -1,32 +1,67 @@
 """
 Japanese News Reader — app.py
 朝日新闻 文章列表 + DeepSeek 语法分析
+
+全文只给站长自己看：
+- 公开访客：只看到标题、原文链接和官方摘要（网站是公开的，公开显示全文等于转载）
+- 站长：用 OWNER_PASSWORD 登录后，阅读页直接显示服务器抓到的全文（私人学习用）
+- 任何人都可以用书签工具（static/jnr.js）把自己浏览器里正在看的正文送进阅读页
 """
 
-from flask import Flask, request, jsonify, render_template
-from openai import OpenAI
+from flask import (Flask, request, jsonify, render_template, session,
+                   redirect, url_for)
+from openai import (OpenAI, APIConnectionError, APIStatusError,
+                    AuthenticationError, RateLimitError)
 from bs4 import BeautifulSoup
 import requests as http
 from dotenv import load_dotenv
 import html as htmllib
+import hmac
 import json
 import re
 import os
 import hashlib
 import time
-from collections import defaultdict, deque
-from datetime import datetime
+from collections import OrderedDict, defaultdict, deque
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ─── 配置 ────────────────────────────────────────────────────────────────
 load_dotenv()  # 本地开发时从 .env 读取；Render 上直接用环境变量
-DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
+
+
+def _clean_key(raw):
+    """去掉复制粘贴时容易带进来的空格、换行和引号（"sk-..." 带引号会被 DeepSeek 判为无效）。"""
+    return (raw or '').strip().strip('\'"').strip()
+
+
+def _mask(key):
+    """日志里只显示 key 的开头和最后 4 位，方便和 DeepSeek 后台对照。"""
+    return f'{key[:3]}…{key[-4:]}' if len(key) >= 12 else '***'
+
+
+DEEPSEEK_API_KEY = _clean_key(os.environ.get('DEEPSEEK_API_KEY'))
+# deepseek-chat 已在 2026-07-24 停用，现在的模型名是 deepseek-flash。
+# 以后 DeepSeek 再改名，在 Render 上设置 DEEPSEEK_MODEL 即可，不用改代码。
+DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', '').strip() or 'deepseek-flash'
+
+if DEEPSEEK_API_KEY:
+    _hint = '' if DEEPSEEK_API_KEY.startswith('sk-') else '（不像 DeepSeek 的 key：应该以 sk- 开头）'
+    print(f'[config] DEEPSEEK_API_KEY 已设置：{_mask(DEEPSEEK_API_KEY)}，'
+          f'共 {len(DEEPSEEK_API_KEY)} 个字符{_hint}；模型：{DEEPSEEK_MODEL}', flush=True)
+else:
+    print('[config] 没有设置 DEEPSEEK_API_KEY，分析功能不可用', flush=True)
+
+# 站长密码：设置后可以在 /login 登录，登录后阅读页显示全文。不设置就没有全文模式
+OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD', '').strip()
+print(f'[config] 站长全文模式：{"已开启" if OWNER_PASSWORD else "未开启（没有设置 OWNER_PASSWORD）"}',
+      flush=True)
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, 'articles.json')
 JST        = ZoneInfo('Asia/Tokyo')  # Render 服务器是 UTC，日期统一按日本时间算
-MAX_CHARS  = 2000  # /analyze 单次最多分析的字数（控制 API 费用）
+MAX_CHARS  = 2000  # /analyze 单次最多分析的字数（控制 API 费用）；更长的文章由阅读页分段发送
 SUMMARY_CHARS = 120  # 摘要最多显示的字数
 
 # 防止滥用：网站是公开的，任何人都能调用 /analyze（花的是我的 API 额度）
@@ -34,8 +69,11 @@ RATE_WINDOW   = 600   # 秒
 RATE_PER_IP   = 10    # 每个 IP 在 RATE_WINDOW 内最多分析几次
 DAILY_LIMIT   = 300   # 每个 gunicorn 进程每天最多分析几次（费用上限）
 REFRESH_COOLDOWN = 600  # 手动刷新新闻列表的最短间隔（秒），避免频繁访问朝日
+LOGIN_PER_IP  = 5     # 每个 IP 在 RATE_WINDOW 内最多试几次站长密码
+FULLTEXT_TTL  = 6 * 3600  # 站长全文在内存里缓存多久（秒）
+FULLTEXT_MAX  = 50    # 内存里最多缓存几篇全文
 
-# 朝日新闻 RSS（RDF 格式）。只取标题、链接和官方摘要，不抓取正文
+# 朝日新闻 RSS（RDF 格式）。文章列表只取标题、链接和官方摘要；全文只在站长打开文章时抓取
 ASAHI_RSS = 'https://www.asahi.com/rss/asahi/newsheadlines.rdf'
 
 HTTP_HEADS = {
@@ -48,7 +86,21 @@ HTTP_HEADS = {
 }
 
 app = Flask(__name__)
+# 登录状态存在签名 cookie 里。密钥由站长密码推出来：2 个 gunicorn 进程一致，改密码后旧登录全部失效
+if OWNER_PASSWORD:
+    app.secret_key = hashlib.sha256(f'jnr-session:{OWNER_PASSWORD}'.encode()).hexdigest()
+else:
+    app.secret_key = os.urandom(32)  # 没开全文模式，用不到登录
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=bool(os.environ.get('RENDER')),  # Render 上是 https；本地 http 也能登录
+    PERMANENT_SESSION_LIFETIME=timedelta(days=365),
+)
 
+
+def _is_owner():
+    return bool(OWNER_PASSWORD) and session.get('owner') is True
 
 
 # ─── 缓存 ────────────────────────────────────────────────────────────────
@@ -216,16 +268,72 @@ def _fetch_asahi_summary(url: str) -> str:
     return summary
 
 
+# ─── 站长全文（只在站长打开文章时抓取，只放内存，不写进 articles.json） ──
+
+# 朝日新闻文章页里不是正文的段落
+_ASAHI_NOISE = (
+    '有料会員になると', 'お気に入りのニュース', 'Googleで優先的',
+    '権利を保有', '著作権', '会員限定の有料記事',
+    'あわせて読みたい', '関連記事', 'シェアする',
+    '今すぐ「朝日新聞」', 'The Asahi Shimbun',
+)
+_PAYWALL_RE = re.compile(r'残り\s*[0-9０-９,，]+\s*文字')
+_fulltext_cache = OrderedDict()  # url → (抓取时间, 结果)；每个进程各一份
+
+
+def _extract_asahi_body(html):
+    """从朝日新闻文章页 HTML 取出正文段落（和以前能看全文的版本同样的规则）。"""
+    soup = BeautifulSoup(html, 'html.parser')
+    main = soup.find('article') or soup.find('main') or soup.body
+    if not main:
+        return {'text': '', 'paywalled': False}
+
+    parts, seen = [], set()
+    for p in main.find_all('p'):
+        txt = p.get_text(strip=True)
+        if len(txt) < 25 or txt in seen or any(k in txt for k in _ASAHI_NOISE):
+            continue
+        seen.add(txt)
+        parts.append(txt)
+    # 付费文章只能拿到免费的前半部分，页面上会写「残り○○文字」
+    paywalled = bool(_PAYWALL_RE.search(soup.get_text(' ', strip=True)))
+    return {'text': '\n\n'.join(parts), 'paywalled': paywalled}
+
+
+def _get_full_text(url):
+    """抓取一篇文章的全文给站长看。url 只来自朝日 RSS 缓存，不接受用户输入的网址。"""
+    now = time.time()
+    hit = _fulltext_cache.get(url)
+    if hit and now - hit[0] < FULLTEXT_TTL:
+        return hit[1]
+    try:
+        resp = http.get(url, headers=HTTP_HEADS, timeout=15)
+        resp.raise_for_status()
+        resp.encoding = 'utf-8'
+        result = _extract_asahi_body(resp.text)
+    except Exception as exc:
+        print(f'[fulltext] 抓取失败 {url}: {exc!r}', flush=True)
+        return {'text': '', 'paywalled': False}
+    if result['text']:
+        _fulltext_cache[url] = (now, result)
+        _fulltext_cache.move_to_end(url)
+        while len(_fulltext_cache) > FULLTEXT_MAX:
+            _fulltext_cache.popitem(last=False)
+    return result
+
+
 # ─── 路由 ────────────────────────────────────────────────────────────────
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', owner=_is_owner(), owner_enabled=bool(OWNER_PASSWORD))
 
 
 @app.route('/reader')
 def reader_blank():
-    return render_template('reader.html', article=None)
+    # 书签工具会打开 /reader#import=…，正文在 URL 的 # 后面，只在浏览器里读取，不会发到服务器
+    return render_template('reader.html', article=None, full=None,
+                           owner=_is_owner(), max_chars=MAX_CHARS)
 
 
 @app.route('/reader/<article_id>')
@@ -233,7 +341,60 @@ def reader(article_id):
     # Render 免费版重启后磁盘会清空，所以缓存里没有时先抓取一次
     articles, _ = get_articles()
     article = next((a for a in articles if a['id'] == article_id), None)
-    return render_template('reader.html', article=article)
+    owner = _is_owner()
+    full = _get_full_text(article['url']) if (article and owner) else None
+    return render_template('reader.html', article=article, full=full,
+                           owner=owner, max_chars=MAX_CHARS)
+
+
+# ─── 站长登录 ────────────────────────────────────────────────────────────
+
+_login_hits = defaultdict(deque)
+_login_fails = deque()  # 所有 IP 加起来的失败记录：X-Forwarded-For 可以伪造，只按 IP 限制不够
+
+
+def _safe_next(target):
+    """登录后只跳回本站页面，防止被利用成跳去别的网站。"""
+    if target and target.startswith('/') and not target.startswith('//') and '\\' not in target:
+        return target
+    return '/'
+
+
+def _login_blocked():
+    now = time.time()
+    for q in (_login_hits[_client_ip()], _login_fails):
+        while q and now - q[0] > RATE_WINDOW:
+            q.popleft()
+    return len(_login_hits[_client_ip()]) >= LOGIN_PER_IP or len(_login_fails) >= LOGIN_PER_IP * 4
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    next_url = _safe_next(request.values.get('next', '/'))
+    error = None
+    if request.method == 'POST':
+        if not OWNER_PASSWORD:
+            error = '还没开启：请先在 Render 的环境变量里设置 OWNER_PASSWORD'
+        elif _login_blocked():
+            error = f'试太多次了，请 {RATE_WINDOW // 60} 分钟后再试'
+        else:
+            _login_hits[_client_ip()].append(time.time())
+            password = request.form.get('password', '')
+            if hmac.compare_digest(password.encode(), OWNER_PASSWORD.encode()):
+                session.clear()
+                session.permanent = True
+                session['owner'] = True
+                return redirect(next_url)
+            _login_fails.append(time.time())
+            error = '密码不对'
+    return render_template('login.html', error=error, enabled=bool(OWNER_PASSWORD),
+                           owner=_is_owner(), next_url=next_url)
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('index'))
 
 
 # ─── 简单限流（每个进程各自计数，够用即可） ─────────────────────────────
@@ -278,6 +439,7 @@ def api_articles():
         'articles':   articles,
         'date':       cache.get('date', ''),
         'updated_at': cache.get('updated_at', ''),
+        'owner':      _is_owner(),
     }
     if err:
         resp['warning'] = f'抓取失败，已使用缓存数据：{err}'
@@ -294,20 +456,98 @@ def analyze():
     if not text:
         return jsonify({'error': '请输入日语文章'}), 400
     if len(text) > MAX_CHARS:
-        return jsonify({'error': f'文章太长（{len(text)} 字），请控制在 {MAX_CHARS} 字以内'}), 400
+        return jsonify({'error': f'这一段太长（{len(text)} 字），每次最多 {MAX_CHARS} 字'}), 400
     if not DEEPSEEK_API_KEY:
-        return jsonify({'error': '服务器未设置 DEEPSEEK_API_KEY 环境变量'}), 500
+        return jsonify({'error': '服务器没有设置 DEEPSEEK_API_KEY 环境变量'}), 503
     limit_msg = _rate_limited()
     if limit_msg:
         return jsonify({'error': limit_msg}), 429
 
-    orig_len = len(text)
-    print(f"[analyze] 原文长度: {orig_len} 字符", flush=True)
+    print(f"[analyze] 原文长度: {len(text)} 字符", flush=True)
 
     try:
-        client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
+        result = _ask_deepseek(_build_prompt(text))
+        for key in ('vocabulary', 'grammar', 'translation'):
+            items = result.get(key)
+            result[key] = [x for x in items if isinstance(x, dict)] if isinstance(items, list) else []
 
-        prompt = f"""你是日语教学专家。请完成三项任务。
+        # ── 在 Python 端构建 annotated_html ──
+        result['annotated_html'] = _build_annotated_html(
+            text, result['vocabulary'], result['grammar']
+        )
+        print(f"[analyze] vocab={len(result['vocabulary'])}, "
+              f"grammar={len(result['grammar'])}, "
+              f"translation={len(result['translation'])}",
+              flush=True)
+        return jsonify(result)
+
+    # 详细错误只写进 Render 日志；给页面的提示说清楚是哪一类问题
+    except AuthenticationError as e:
+        print(f"[analyze] DeepSeek 401，当前 key {_mask(DEEPSEEK_API_KEY)}：{e}", flush=True)
+        return jsonify({'error': 'DeepSeek 拒绝了 API Key（401）：key 已删除或填错。'
+                                 '请在 platform.deepseek.com 新建一个 key，'
+                                 '再更新 Render 的环境变量 DEEPSEEK_API_KEY'}), 503
+    except RateLimitError as e:
+        print(f"[analyze] DeepSeek 429：{e}", flush=True)
+        return jsonify({'error': 'AI 服务太忙（429），请过一会儿再试'}), 503
+    except APIStatusError as e:
+        print(f"[analyze] DeepSeek HTTP {e.status_code}：{e}", flush=True)
+        if e.status_code == 402:
+            return jsonify({'error': 'AI 服务额度用完了（402），请到 platform.deepseek.com 充值'}), 503
+        if e.status_code in (400, 404, 422):
+            return jsonify({'error': f'DeepSeek 拒绝了请求（{e.status_code}）。常见原因是模型名 '
+                                     f'{DEEPSEEK_MODEL} 已停用，可以在 Render 设置 DEEPSEEK_MODEL '
+                                     '换成新的模型名；详细原因见 Render 日志'}), 502
+        return jsonify({'error': f'AI 服务出错（{e.status_code}），请稍后重试'}), 502
+    except APIConnectionError as e:  # 也包括超时
+        print(f"[analyze] 连不上 DeepSeek：{e!r}", flush=True)
+        return jsonify({'error': '连不上 AI 服务，请稍后重试'}), 502
+    except json.JSONDecodeError as e:
+        return jsonify({'error': f'AI 返回格式解析失败，请重试（{e}）'}), 500
+    except Exception as e:
+        print(f"[analyze] error: {e!r}", flush=True)
+        return jsonify({'error': '分析失败，请稍后重试'}), 500
+
+
+def _ask_deepseek(prompt):
+    """调用 DeepSeek（JSON 模式）并解析结果。
+
+    官方文档说明 JSON 模式偶尔会返回空内容；遇到空内容或解析失败时重试一次。
+    """
+    client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
+    last_error = None
+    for _attempt in range(2):
+        response = client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=[
+                {
+                    'role': 'system',
+                    'content': '你是专业日语教学助手，只输出纯 JSON，禁止输出代码块标记（```）或说明文字。'
+                },
+                {'role': 'user', 'content': prompt}
+            ],
+            temperature=0.1,
+            max_tokens=8000,
+            response_format={'type': 'json_object'},
+        )
+        raw = (response.choices[0].message.content or '').strip()
+        raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
+        raw = re.sub(r'```\s*$', '', raw, flags=re.MULTILINE)
+        raw = raw.strip()
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError as e:
+            last_error = e
+            print(f"[analyze] AI 返回的不是 JSON（{len(raw)} 字符），重试", flush=True)
+            continue
+        if isinstance(result, dict):
+            return result
+        last_error = json.JSONDecodeError('AI 返回的 JSON 不是对象', raw, 0)
+    raise last_error
+
+
+def _build_prompt(text):
+    return f"""你是日语教学专家。请完成三项任务。
 
 【原文】
 {text}
@@ -375,55 +615,6 @@ pattern 字段写句型中出现在原文里的部分（4-12 字），如 "わ�
 1. 不要标注人名、地名、机构名、职位名作为词汇
 2. 语法只标 N1/N2 句型或常用复合句型（4-12字），禁止标助词/活用/语态
 3. 词汇 8-15 个，语法 5-10 个"""
-
-        print(f"[analyze] prompt 长度: {len(prompt)} 字符", flush=True)
-
-        response = client.chat.completions.create(
-            model='deepseek-chat',
-            messages=[
-                {
-                    'role': 'system',
-                    'content': '你是专业日语教学助手，只输出纯 JSON，禁止输出代码块标记（```）或说明文字。'
-                },
-                {'role': 'user', 'content': prompt}
-            ],
-            temperature=0.1,
-            max_tokens=8000,
-            response_format={'type': 'json_object'},
-        )
-
-        raw = response.choices[0].message.content.strip()
-        raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
-        raw = re.sub(r'```\s*$', '', raw, flags=re.MULTILINE)
-        raw = raw.strip()
-
-        result = json.loads(raw)
-        result.setdefault('vocabulary', [])
-        result.setdefault('grammar', [])
-        result.setdefault('translation', [])
-
-        # ── 在 Python 端构建 annotated_html ──
-        result['annotated_html'] = _build_annotated_html(
-            text, result['vocabulary'], result['grammar']
-        )
-
-        print(f"[analyze] vocab={len(result['vocabulary'])}, "
-              f"grammar={len(result['grammar'])}, "
-              f"translation={len(result['translation'])}",
-              flush=True)
-
-        return jsonify(result)
-
-    except json.JSONDecodeError as e:
-        return jsonify({'error': f'AI 返回格式解析失败，请重试（{str(e)}）'}), 500
-    except Exception as e:
-        msg = str(e)
-        if any(k in msg for k in ('auth', 'Auth', '401', 'invalid_api_key', 'API key')):
-            return jsonify({'error': 'API Key 无效，请检查环境变量 DEEPSEEK_API_KEY'}), 401
-        if '402' in msg or 'Insufficient Balance' in msg:
-            return jsonify({'error': 'AI 服务额度暂时用完了，请稍后再试'}), 503
-        print(f"[analyze] error: {msg}", flush=True)  # 详细错误只写日志，不返回给用户
-        return jsonify({'error': '分析失败，请稍后重试'}), 500
 
 
 def _build_annotated_html(text, vocab_list, grammar_list):
