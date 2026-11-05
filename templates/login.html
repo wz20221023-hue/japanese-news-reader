@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>站长登录</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --primary: #4f6ef7; --primary-dark: #3a56d4;
+      --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0;
+      --bg: #f1f5f9; --white: #ffffff;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+                   'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh;
+      display: flex; align-items: center; justify-content: center; padding: 16px;
+    }
+    .box {
+      width: 100%; max-width: 380px; background: var(--white);
+      border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.08); padding: 28px 24px;
+    }
+    h1 { font-size: 18px; margin-bottom: 6px; }
+    .sub { font-size: 13px; color: var(--text-muted); line-height: 1.7; margin-bottom: 18px; }
+    input[type=password] {
+      width: 100%; padding: 10px 12px; font-size: 15px;
+      border: 1px solid var(--border); border-radius: 8px;
+    }
+    input[type=password]:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,110,247,.12); }
+    button {
+      width: 100%; margin-top: 12px; padding: 10px; font-size: 15px; font-weight: 600;
+      color: #fff; background: var(--primary); border: none; border-radius: 8px; cursor: pointer;
+    }
+    button:hover { background: var(--primary-dark); }
+    .err { margin-top: 12px; font-size: 13px; color: #dc2626; }
+    .ok  { font-size: 14px; color: #047857; margin-bottom: 14px; }
+    .back { display: inline-block; margin-top: 16px; font-size: 13px; color: var(--text-muted); }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>🔓 站长登录</h1>
+    {% if owner %}
+      <p class="ok">已经登录，打开文章会直接显示全文。</p>
+      <a href="/logout">退出登录</a>
+    {% elif not enabled %}
+      <p class="sub">全文模式还没开启：在 Render 的 Environment 里添加环境变量 <code>OWNER_PASSWORD</code>（自己设一个密码），保存后等重新部署完成再来登录。</p>
+    {% else %}
+      <p class="sub">登录后打开文章会直接显示全文，只有你自己看得到；其他访客仍然只看到摘要。在每台设备上登录一次就行。</p>
+      <form method="post" action="/login">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <input type="password" name="password" placeholder="站长密码" autocomplete="current-password" required autofocus>
+        <button type="submit">登录</button>
+      </form>
+    {% endif %}
+    {% if error %}<p class="err">⚠️ {{ error }}</p>{% endif %}
+    <a class="back" href="/">← 回到文章列表</a>
+  </div>
+</body>
+</html>
