@@ -219,15 +219,21 @@ def _cache_article():
                             'articles': [ARTICLE]})
 
 
-def test_visitor_gets_summary_only(client, monkeypatch):
+def test_visitor_gets_full_text(client, monkeypatch):
     monkeypatch.setattr(app_module, 'OWNER_PASSWORD', 'secret-pw')
-    calls = []
-    monkeypatch.setattr(app_module, '_get_full_text', lambda url: calls.append(url) or {'text': FULL_TEXT})
+    monkeypatch.setattr(app_module, '_get_full_text', lambda url: {'text': FULL_TEXT, 'paywalled': False})
+    _cache_article()
+    page = client.get('/reader/abc123').get_data(as_text=True)  # 没有登录
+    assert json.dumps(FULL_TEXT) in page
+    assert '下方是全文' in page
+
+
+def test_visitor_sees_summary_when_full_text_fails(client, monkeypatch):
+    monkeypatch.setattr(app_module, '_get_full_text', lambda url: {'text': '', 'paywalled': False})
     _cache_article()
     page = client.get('/reader/abc123').get_data(as_text=True)
     assert json.dumps(ARTICLE['summary']) in page
-    assert '第一段' not in page and json.dumps(FULL_TEXT) not in page
-    assert calls == []  # 访客打开时根本不抓全文
+    assert '全文没抓到' in page
 
 
 def test_owner_gets_full_text(client, monkeypatch):
@@ -241,9 +247,6 @@ def test_owner_gets_full_text(client, monkeypatch):
     # 全文不写进 articles.json
     with open(app_module.CACHE_FILE, encoding='utf-8') as f:
         assert '第一段' not in f.read()
-    # 退出后又只有摘要
-    client.get('/logout')
-    assert json.dumps(FULL_TEXT) not in client.get('/reader/abc123').get_data(as_text=True)
 
 
 def test_wrong_password_and_login_limit(client, monkeypatch):
@@ -277,6 +280,7 @@ def test_extract_asahi_body_keeps_paragraphs_and_drops_noise():
       <p>有料会員になると会員限定の有料記事もお読みいただけます。長めの案内文です。</p>
       <p>第二段の本文です。こちらもテスト用の文章で、ある程度の長さがあります。</p>
       <p>第二段の本文です。こちらもテスト用の文章で、ある程度の長さがあります。</p>
+      <p>【今ならキャンペーン価格】有料記事が2カ月間 月額100円で読み放題！詳しくはこちら</p>
       <div>この記事は有料記事です。残り1234文字</div>
     </article></body></html>
     """

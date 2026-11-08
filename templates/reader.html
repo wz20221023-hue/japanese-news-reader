@@ -503,7 +503,7 @@
 <main class="main">
 
   {% if article %}
-  <!-- 文章来源信息：只显示标题、时间、原文链接；正文请到朝日新闻阅读 -->
+  <!-- 文章来源信息：标题、时间、原文链接 -->
   <div class="article-meta">
     <div class="article-meta-title">{{ article.title }}</div>
     <div class="article-meta-time">
@@ -511,14 +511,12 @@
       <a class="source-link" href="{{ article.url }}" target="_blank" rel="noopener">朝日新聞で全文を読む ↗</a>
     </div>
     {% if full and full.text %}
-    <div class="article-meta-note full">🔓 下方是全文（只有登录的你看得到），共 {{ full.text | length }} 字，超过 {{ max_chars }} 字会自动分段分析。</div>
+    <div class="article-meta-note full">📄 下方是全文，共 {{ full.text | length }} 字，超过 {{ max_chars }} 字会自动分段分析。</div>
       {% if full.paywalled %}
     <div class="article-meta-note warn">这是付费文章，服务器只拿到免费的前半部分。登录朝日后在原文页点书签「📖 日语分析」，可以把你看得到的全文送过来。</div>
       {% endif %}
-    {% elif owner %}
-    <div class="article-meta-note warn">全文没抓到，下方是官方摘要。可以在原文页点书签「📖 日语分析」把正文送过来。</div>
     {% else %}
-    <div class="article-meta-note">下方是官方摘要。读全文：打开原文，点书签栏里的「📖 日语分析」，正文会自动送到这里（<a href="/#bookmarklet">安装书签</a>）。</div>
+    <div class="article-meta-note warn">全文没抓到，下方是官方摘要。可以打开原文，点书签栏里的「📖 日语分析」把正文送过来（<a href="/#bookmarklet">安装书签</a>）。</div>
     {% endif %}
   </div>
   {% endif %}

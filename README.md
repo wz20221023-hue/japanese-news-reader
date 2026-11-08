@@ -18,15 +18,16 @@ Long articles are split into parts of up to 2,000 characters and analyzed one pa
 
 ## Full text and copyright
 
-The site is public, so it does **not** republish news articles. Visitors see only the
-headline, a link to the original page, and the short summary that the publisher itself
-provides in the page's `og:description` meta tag.
+Article text belongs to The Asahi Shimbun. Opening an article shows its text as fetched
+from the public article page, with a link to the original. For paid articles this is only
+the free part, and the app does not try to get around the paywall. The text is kept in
+memory for a few hours and never written to `articles.json`.
 
-There are two ways to study the full text:
+The owner login at `/login` (`OWNER_PASSWORD`) still exists but is no longer needed to read
+the full text.
 
-- **Owner mode (for my own study).** When `OWNER_PASSWORD` is set, I can log in at `/login`.
-  After that, opening an article shows its full text, fetched for me only. It is kept in
-  memory for a few hours and never written to the public cache or shown to other visitors.
+There is also a bookmarklet:
+
 - **Bookmarklet (for anyone).** The home page has a "📖 日语分析" bookmarklet. Clicking it on an
   article page (Asahi, NHK or any Japanese site) sends the text you are reading in your own
   browser to the reader. The text travels in the URL fragment (`#…`), so the server never
@@ -51,7 +52,7 @@ There are two ways to study the full text:
 Browser ──GET /api/articles──▶ Flask ──▶ Asahi RSS → title / link / official summary
                                   (cached once per day in articles.json, JST date)
 
-Owner   ──GET /reader/<id>───▶ Flask ──▶ article page → full text (memory only, owner only)
+Browser ──GET /reader/<id>───▶ Flask ──▶ article page → full text (memory only)
 
 Article page ──bookmarklet──▶ /reader#import=… (text stays in the browser)
 
@@ -89,7 +90,7 @@ pytest
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | yes | API key from https://platform.deepseek.com (no quotes or spaces) |
 | `DEEPSEEK_MODEL` | no | Model name (default `deepseek-flash`; `deepseek-chat` was retired on 2026-07-24) |
-| `OWNER_PASSWORD` | no | Turns on owner mode: log in at `/login` to see full text |
+| `OWNER_PASSWORD` | no | Turns on the owner login at `/login` (not needed for full text) |
 | `PORT` | set by Render | Port gunicorn binds to in production (see `Procfile`) |
 | `FLASK_PORT` | no | Port for local `python app.py` (default `5000`) |
 
@@ -110,7 +111,7 @@ Create a *Web Service* from this repository:
 
 - Build command: `pip install -r requirements.txt`
 - Start command: taken from `Procfile` (`gunicorn app:app ...`)
-- Environment: add `DEEPSEEK_API_KEY` (and `OWNER_PASSWORD` if you want owner mode)
+- Environment: add `DEEPSEEK_API_KEY`
 
 ## About AI-assisted development
 

@@ -2,9 +2,9 @@
 Japanese News Reader — app.py
 朝日新闻 文章列表 + DeepSeek 语法分析
 
-全文只给站长自己看：
-- 公开访客：只看到标题、原文链接和官方摘要（网站是公开的，公开显示全文等于转载）
-- 站长：用 OWNER_PASSWORD 登录后，阅读页直接显示服务器抓到的全文（私人学习用）
+全文：
+- 所有访客打开文章时，阅读页都显示服务器抓到的全文（付费文章只有免费的前半部分）
+- 站长登录（OWNER_PASSWORD）仍然保留，但看全文已经不需要登录
 - 任何人都可以用书签工具（static/jnr.js）把自己浏览器里正在看的正文送进阅读页
 """
 
@@ -268,14 +268,14 @@ def _fetch_asahi_summary(url: str) -> str:
     return summary
 
 
-# ─── 站长全文（只在站长打开文章时抓取，只放内存，不写进 articles.json） ──
+# ─── 全文（有人打开文章时才抓取，只放内存，不写进 articles.json） ──
 
 # 朝日新闻文章页里不是正文的段落
 _ASAHI_NOISE = (
     '有料会員になると', 'お気に入りのニュース', 'Googleで優先的',
     '権利を保有', '著作権', '会員限定の有料記事',
     'あわせて読みたい', '関連記事', 'シェアする',
-    '今すぐ「朝日新聞」', 'The Asahi Shimbun',
+    '今すぐ「朝日新聞」', 'The Asahi Shimbun', '【今ならキャンペーン価格】',
 )
 _PAYWALL_RE = re.compile(r'残り\s*[0-9０-９,，]+\s*文字')
 _fulltext_cache = OrderedDict()  # url → (抓取时间, 结果)；每个进程各一份
@@ -301,7 +301,7 @@ def _extract_asahi_body(html):
 
 
 def _get_full_text(url):
-    """抓取一篇文章的全文给站长看。url 只来自朝日 RSS 缓存，不接受用户输入的网址。"""
+    """抓取一篇文章的全文。url 只来自朝日 RSS 缓存，不接受用户输入的网址。"""
     now = time.time()
     hit = _fulltext_cache.get(url)
     if hit and now - hit[0] < FULLTEXT_TTL:
@@ -342,7 +342,7 @@ def reader(article_id):
     articles, _ = get_articles()
     article = next((a for a in articles if a['id'] == article_id), None)
     owner = _is_owner()
-    full = _get_full_text(article['url']) if (article and owner) else None
+    full = _get_full_text(article['url']) if article else None
     return render_template('reader.html', article=article, full=full,
                            owner=owner, max_chars=MAX_CHARS)
 
